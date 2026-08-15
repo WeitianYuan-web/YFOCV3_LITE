@@ -7,25 +7,43 @@ static volatile uint8_t s_rx_head;
 static volatile uint8_t s_rx_tail;
 static volatile uint8_t s_bus_off_pending;
 
+static void Can_ConfigFilters(uint8_t id)
+{
+  static const uint16_t bases[5] = {
+    CFG_CAN_MOTION_BASE,
+    CFG_CAN_VEL_BASE,
+    CFG_CAN_GAINS_BASE,
+    CFG_CAN_POS_BASE,
+    CFG_CAN_MGMT_BASE
+  };
+  FDCAN_FilterTypeDef filter = {0};
+  uint32_t i;
+
+  filter.IdType = FDCAN_STANDARD_ID;
+  filter.FilterType = FDCAN_FILTER_MASK;
+  filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
+  filter.FilterID2 = 0x7FFU;
+
+  for (i = 0U; i < 5U; i++)
+  {
+    filter.FilterIndex = i;
+    filter.FilterID1 = (uint32_t)bases[i] + (uint32_t)id;
+    if (HAL_FDCAN_ConfigFilter(&hfdcan1, &filter) != HAL_OK)
+    {
+      Error_Handler();
+    }
+  }
+}
+
 void Can_Init(uint8_t node_id)
 {
-  FDCAN_FilterTypeDef filter = {0};
-  uint8_t id = ((node_id >= 1U) && (node_id <= 15U)) ? node_id : 1U;
-  const uint32_t cmd_id = CFG_CAN_CMD_BASE + (uint32_t)id;
+  uint8_t id = ((node_id >= 1U) && (node_id <= 63U)) ? node_id : 1U;
+
   s_rx_head = 0U;
   s_rx_tail = 0U;
   s_bus_off_pending = 0U;
 
-  filter.IdType = FDCAN_STANDARD_ID;
-  filter.FilterIndex = 0;
-  filter.FilterType = FDCAN_FILTER_MASK;
-  filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
-  filter.FilterID1 = cmd_id;
-  filter.FilterID2 = 0x7FFU;
-  if (HAL_FDCAN_ConfigFilter(&hfdcan1, &filter) != HAL_OK)
-  {
-    Error_Handler();
-  }
+  Can_ConfigFilters(id);
 
   (void)HAL_FDCAN_ConfigGlobalFilter(&hfdcan1,
                                      FDCAN_REJECT,

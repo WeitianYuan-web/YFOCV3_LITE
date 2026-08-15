@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Minimal YFOCV3 host: send MIT-style control frames and parse feedback."""
+"""Minimal YFOCV3 host CLI: Motor CAN Protocol V1.0 motion stream."""
 
 from __future__ import annotations
 
 import argparse
-import math
 import sys
 import time
 
@@ -14,46 +13,7 @@ except ImportError:
     print("python-can is required: pip install python-can", file=sys.stderr)
     raise
 
-PI = math.pi
-POS_CMD = (-4.0 * PI, 4.0 * PI)
-VEL = (-100.0, 100.0)
-KP = (0.0, 500.0)
-KD = (0.0, 5.0)
-POS_FB = (-4.0 * PI, 4.0 * PI)
-TORQUE = (-1.0, 1.0)
-
-
-def encode_u16(value: float, min_v: float, max_v: float) -> int:
-    span = max_v - min_v
-    t = 0.0 if span == 0.0 else (value - min_v) / span
-    t = min(max(t, 0.0), 1.0)
-    return int(t * 65535.0 + 0.5)
-
-
-def decode_u16(raw: int, min_v: float, max_v: float) -> float:
-    return min_v + (raw * (max_v - min_v) / 65535.0)
-
-
-def pack_control(pos: float, vel: float, kp: float, kd: float) -> bytes:
-    return b"".join(
-        encode_u16(v, lo, hi).to_bytes(2, "big")
-        for v, (lo, hi) in (
-            (pos, POS_CMD),
-            (vel, VEL),
-            (kp, KP),
-            (kd, KD),
-        )
-    )
-
-
-def unpack_feedback(data: bytes) -> dict[str, float | int]:
-    if len(data) != 8:
-        raise ValueError("feedback DLC must be 8")
-    pos = decode_u16(int.from_bytes(data[0:2], "big"), *POS_FB)
-    vel = decode_u16(int.from_bytes(data[2:4], "big"), *VEL)
-    torque = decode_u16(int.from_bytes(data[4:6], "big"), *TORQUE)
-    turns = int.from_bytes(data[6:8], "big")
-    return {"pos": pos, "vel": vel, "torque": torque, "turns": turns}
+import protocol as proto
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,48 +23,84 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--interface", default=default_interface, help="python-can interface")
     parser.add_argument("--channel", default=default_channel, help="CAN channel / slcan device")
     parser.add_argument("--bitrate", type=int, default=1000000)
-    parser.add_argument("--id", type=int, default=1, help="device node id (nibble)")
+    parser.add_argument("--id", type=int, default=1, help="motor id 1..63")
     parser.add_argument("--pos", type=float, default=0.0, help="target angle rad")
     parser.add_argument("--vel", type=float, default=0.0, help="target velocity rad/s")
     parser.add_argument("--kp", type=float, default=0.0)
     parser.add_argument("--kd", type=float, default=0.0)
-    parser.add_argument("--rate", type=float, default=200.0, help="control TX rate Hz")
-    parser.add_argument("--listen", action="store_true", help="only parse feedback")
-    parser.add_argument("--once", action="store_true", help="send one control frame and exit after first feedback")
+    parser.add_argument("--ff", type=float, default=0.0, help="voltage feedforward 0..1")
+    parser.add_argument("--rate", type=float, default=200.0, help="motion TX rate Hz")
+    parser.add_argument("--listen", action="store_true", help="only parse bus frames")
+    parser.add_argument("--once", action="store_true", help="send setup + one motion frame, then exit")
+    parser.add_argument("--gui", action="store_true", help="open GUI instead of CLI")
     return parser.parse_args()
+
+
+def wait_ack(bus: can.BusABC, ack_id: int, cmd: int, seq: int, timeout_s: float = 0.05):
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        msg = bus.recv(timeout=max(0.0, deadline - time.monotonic()))
+        if msg is None or msg.is_extended_id or msg.arbitration_id != ack_id:
+            continue
+        ack = proto.unpack_ack(bytes(msg.data))
+        if ack["cmd"] == cmd and ack["seq"] == seq:
+            return ack
+    return None
 
 
 def main() -> int:
     args = parse_args()
-    node_id = args.id & 0xF
-    cmd_id = 0x100 + node_id
-    fb_id = 0x200 + node_id
+    if args.gui:
+        from servo_gui import main as gui_main
 
+        return gui_main()
+
+    ids = proto.ids(args.id)
     bus = can.Bus(interface=args.interface, channel=args.channel, bitrate=args.bitrate)
-    payload = pack_control(args.pos, args.vel, args.kp, args.kd)
+    motion = proto.pack_motion(args.pos, args.vel, args.ff)
     period = 0.0 if args.rate <= 0.0 else 1.0 / args.rate
     last_tx = 0.0
+    seq = 1
 
-    print(f"cmd=0x{cmd_id:03X} fb=0x{fb_id:03X} pos={args.pos:.3f} vel={args.vel:.3f} kp={args.kp:.3f} kd={args.kd:.3f}")
+    print(
+        f"motion=0x{ids['motion']:03X} fb=0x{ids['fb']:03X} "
+        f"pos={args.pos:.3f} vel={args.vel:.3f} kp={args.kp:.3f} kd={args.kd:.3f} ff={args.ff:.3f}"
+    )
     try:
+        if not args.listen:
+            bus.send(
+                can.Message(
+                    arbitration_id=ids["gains"],
+                    data=proto.pack_gains(proto.MODE_MOTION, seq, args.kp, 0.0, args.kd),
+                    is_extended_id=False,
+                )
+            )
+            ack = wait_ack(bus, ids["ack"], proto.CMD_SET_GAINS, seq)
+            print(f"gains ack={ack['result_name'] if ack else 'timeout'}")
+
         while True:
             now = time.monotonic()
             if not args.listen and (last_tx == 0.0 or (now - last_tx) >= period):
-                bus.send(can.Message(arbitration_id=cmd_id, data=payload, is_extended_id=False))
+                bus.send(can.Message(arbitration_id=ids["motion"], data=motion, is_extended_id=False))
                 last_tx = now
 
             msg = bus.recv(timeout=0.05)
-            if msg is None:
+            if msg is None or msg.is_extended_id:
                 continue
-            if msg.arbitration_id != fb_id or msg.is_extended_id:
-                continue
-            fb = unpack_feedback(bytes(msg.data))
-            print(
-                f"fb pos={fb['pos']:+.4f} rad  vel={fb['vel']:+.3f} rad/s  "
-                f"t={fb['torque']:+.3f}  turns={fb['turns']}"
-            )
-            if args.once:
-                return 0
+            if msg.arbitration_id == ids["fb"]:
+                fb = proto.unpack_feedback(bytes(msg.data))
+                print(f"fb pos={fb['pos']:+.4f} rad  vel={fb['vel']:+.3f} rad/s  t={fb['torque']:+.3f}")
+                if args.once:
+                    return 0
+            elif msg.arbitration_id == ids["ack"]:
+                ack = proto.unpack_ack(bytes(msg.data))
+                print(
+                    f"ack {ack['cmd_name']} seq={ack['seq']} "
+                    f"result={ack['result_name']} state={ack['state_name']}"
+                )
+            elif msg.arbitration_id == ids["status"]:
+                st = proto.unpack_status(bytes(msg.data))
+                print(f"status {st['state_name']} fault={st['fault_name']} mode={st['mode_name']}")
     except KeyboardInterrupt:
         return 0
     finally:

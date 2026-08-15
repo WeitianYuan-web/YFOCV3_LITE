@@ -22,22 +22,29 @@ extern "C" {
 #define CFG_VEL_PLL_HZ              (200.0f)   /* Type-2 PLL bandwidth; 40-120 typical */
 #define CFG_VEL_PLL_ZETA            (0.707f)   /* zeta = 0.707 for critically damped response */
 
-#define CFG_CAN_CMD_BASE            (0x100U)
-#define CFG_CAN_FB_BASE             (0x200U)
+#define CFG_CAN_MOTION_BASE         (0x100U)
+#define CFG_CAN_VEL_BASE            (0x140U)
+#define CFG_CAN_GAINS_BASE          (0x180U)
+#define CFG_CAN_POS_BASE            (0x1C0U)
+#define CFG_CAN_MGMT_BASE           (0x200U)
+#define CFG_CAN_ACK_BASE            (0x280U)
+#define CFG_CAN_FB_BASE             (0x300U)
+#define CFG_CAN_STATUS_BASE         (0x380U)
+#define CFG_CAN_CALI_RPT_BASE       (0x3C0U)
 #define CFG_CAN_RX_SLOTS            (16U)
 
-#define CFG_POS_CMD_MIN             (-12.566370614359172f)  /* -4*pi */
-#define CFG_POS_CMD_MAX             (12.566370614359172f)
+#define CFG_POS_LSB                 (0.0001f)
+#define CFG_VEL_LSB                 (0.1f)
+#define CFG_KP_LSB                  (0.01f)
+#define CFG_KD_LSB                  (0.001f)
+#define CFG_TORQUE_LSB              (0.001f)
+
 #define CFG_VEL_CMD_MIN             (-100.0f)
 #define CFG_VEL_CMD_MAX             (100.0f)
 #define CFG_KP_MIN                  (0.0f)
 #define CFG_KP_MAX                  (500.0f)
 #define CFG_KD_MIN                  (0.0f)
 #define CFG_KD_MAX                  (5.0f)
-#define CFG_POS_FB_MIN              CFG_POS_CMD_MIN
-#define CFG_POS_FB_MAX              CFG_POS_CMD_MAX
-#define CFG_TORQUE_FB_MIN           (-1.0f)
-#define CFG_TORQUE_FB_MAX           (1.0f)
 
 #define CFG_CALI_LOCK_V             (0.15f)
 #define CFG_CALI_LOCK_MS            (500U)
@@ -53,7 +60,6 @@ extern "C" {
 #define CFG_CALI_PROBE_MS           (400U)
 #define CFG_CALI_MIN_VEL            (0.3f)
 
-#define CFG_FB_PERIOD_MS            (5U)
 #define CFG_DEBUG_PERIOD_MS         (200U)
 
 #define CFG_NVIC_TIM1               (1U)

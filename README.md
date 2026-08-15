@@ -1,6 +1,6 @@
 # YFOCV3 最小电压伺服（LC-ESC）
 
-面向 **LC-ESC / STM32G431CBT6 + FD6288 + MT6701** 的最小电压模式伺服固件。上电校准后进入运控，用 CAN 收 MIT 风格控制帧、回传状态。
+面向 **LC-ESC / STM32G431CBT6 + FD6288 + MT6701** 的最小电压模式伺服固件。上电校准或加载参数后直接进入运控，用 CAN 收 Motor Protocol V1.0 运控帧。
 
 ## 构建
 
@@ -91,41 +91,50 @@ PWM 20 kHz 中心对齐；TIM6 4 kHz 运控；无电流采样。
 4 kHz：
 
 ```text
-t_ref = Kd*(v_set - v_act) + Kp*wrap_pi(p_set - p_act)
+t_ref = Kd*(v_set - v_act) + Kp*(p_set - p_act) + Voltage_ff
 t_ref = clamp(t_ref, -V_LIMIT, +V_LIMIT)
 ```
 
-`CFG_V_LIMIT=0.5` 是标幺幅值（1.0 = PWM 满幅），不是伏特。线电压大约 `0.5 × Vbus`。20 kHz 对 Vd/Vq 再限变化率 `CFG_V_SLEW_PU_S`（默认 40 pu/s，0→0.5 约 12.5 ms）。
+`CFG_V_LIMIT=0.4` 是标幺幅值（1.0 = PWM 满幅），不是伏特。线电压大约 `0.4 × Vbus`。20 kHz 对 Vd/Vq 再限变化率 `CFG_V_SLEW_PU_S`。
 
 20 kHz：`q = closed_loop_dir * t_ref`，`d = 0`，逆 Park + SVPWM。
 
-速度：编码器差分 + 一阶低通（默认 80 Hz）。CRC 失败的帧丢弃，保持上次角度。
+速度：二阶 Type-2 PLL（`CFG_VEL_PLL_HZ`）。CRC 失败的帧丢弃，PLL 按上次速度外推。
 
-上电后 Kp/Kd/setpoint 为 0，电机无力矩，直到上位机发控制帧。反馈帧约 200 Hz。
+上电校准或加载参数后直接进入运控：PWM 打开，目标位置设为当前角。上位机发 `SET_GAINS` 后即可发 Motion Command。反馈只在有效 Motion Command 之后回 `0x300+ID`。
 
 ## CAN 协议
 
-默认节点 ID = 1 → 控制 `0x101`，反馈 `0x201`。8 字节，**大端 u16**，线性映射：
+Motor CAN Protocol V1.0，Classic CAN 1 Mbps，**小端**，Motor ID = 1~63（默认 1）。
 
-`x = min + raw * (max-min) / 65535`
-
-控制 `0x100+id`：
-
-| 字节 | 含义 | 范围 |
+| CAN ID | 方向 | 本固件 |
 |------|------|------|
-| 0-1 | 目标角度 | -4π ~ 4π |
-| 2-3 | 目标角速度 | -100 ~ 100 rad/s |
-| 4-5 | Kp | 0 ~ 500 |
-| 6-7 | Kd | 0 ~ 5 |
+| `0x100+ID` | 主机→电机 | Motion Command（已接入） |
+| `0x180+ID` | 主机→电机 | Control Gains，仅 `MOTION_MODE`（已接入） |
+| `0x200+ID` | 主机→电机 | Management：SET_ZERO / GET_STATUS / SET_CONTROL_MODE(motion) |
+| `0x140+ID` / `0x1C0+ID` | 主机→电机 | 速度/位置模式：收包但不执行 |
+| `0x280+ID` | 电机→主机 | Command ACK |
+| `0x300+ID` | 电机→主机 | Motion Feedback |
+| `0x380+ID` | 电机→主机 | Status Response（母线电压/温度填 0） |
+| `0x3C0+ID` | 电机→主机 | 校准上报：未实现 |
 
-反馈 `0x200+id`：
+Motion `0x100+ID`：
 
-| 字节 | 含义 | 范围 |
+| 字节 | 含义 | 编码 |
 |------|------|------|
-| 0-1 | 当前角度 | -4π ~ 4π（与指令同一映射，不再折到 ±π） |
-| 2-3 | 当前角速度 | -100 ~ 100 rad/s |
-| 4-5 | t_ref（电压） | -1 ~ 1 |
-| 6-7 | 圈数 | 0 ~ 65535（uint16 回绕） |
+| 0-3 | 目标位置 | `int32`，`0.0001 rad/LSB` |
+| 4-5 | 目标速度 | `int16`，`0.1 rad/s/LSB` |
+| 6-7 | Voltage FF | `uint16`，`raw/65535` → 0~1 |
+
+Gains `0x180+ID`：Byte0=`0x00`（MOTION），Byte1=Sequence，Byte2-3=Kp（`0.01 pu/rad`），Byte4-5=Ki 必须为 0，Byte6-7=Kd（`0.001 pu·s/rad`）。应答 `0x280`，Command=`0x20`。
+
+反馈 `0x300+ID`：
+
+| 字节 | 含义 | 编码 |
+|------|------|------|
+| 0-3 | 当前位置 | `int32`，`0.0001 rad/LSB`，连续多圈 |
+| 4-5 | 当前速度 | `int16`，`0.1 rad/s/LSB` |
+| 6-7 | 电压指令 | `int16`，`0.001 pu/LSB`（协议的 Torque 字段；本固件无转矩传感器） |
 
 ## 上位机
 
@@ -138,7 +147,15 @@ cd host
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-python servo_host.py --interface pcan --channel PCAN_USBBUS1 --id 1 --pos 3 --vel 0 --kp 0.2 --kd 0
+python servo_gui.py
+```
+
+GUI 可发送协议内全部命令。Motion 支持单次或按设定频率循环发送，并刷新位置/速度/电压反馈。当前固件已接入运控、MOTION Gains、SET_ZERO、GET_STATUS；速度/位置模式、ENABLE/DISABLE、CAN 校准仍会失败或被忽略。
+
+Windows 激活 venv 后请用 `python`，不要用 `python3`：系统里的 `python3` 往往是 Microsoft Store 占位程序，会立刻退出且不报错。
+
+```powershell
+python servo_host.py --interface pcan --channel PCAN_USBBUS1 --id 1 --pos 3 --vel 0 --kp 20 --kd 0.2
 python servo_host.py --interface pcan --channel PCAN_USBBUS1 --id 1 --listen
 ```
 
@@ -151,7 +168,8 @@ cd host
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python3 servo_host.py --interface socketcan --channel can0 --id 1 --pos 0 --vel 10 --kp 0 --kd 0.01
+python3 servo_gui.py
+python3 servo_host.py --interface socketcan --channel can0 --id 1 --pos 0 --vel 10 --kp 0 --kd 0.016
 python3 servo_host.py --interface socketcan --channel can0 --id 1 --listen
 ```
 

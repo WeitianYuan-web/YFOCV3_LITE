@@ -14,6 +14,7 @@ static volatile float s_p_set;
 static volatile float s_v_set;
 static volatile float s_kp;
 static volatile float s_kd;
+static volatile float s_t_ff;
 static volatile float s_t_ref;
 static volatile int8_t s_closed_loop_dir = 1;
 
@@ -81,6 +82,7 @@ void Servo_Init(void)
   s_v_set = 0.0f;
   s_kp = 0.0f;
   s_kd = 0.0f;
+  s_t_ff = 0.0f;
   s_t_ref = 0.0f;
   s_d_out = 0.0f;
   s_q_out = 0.0f;
@@ -130,8 +132,7 @@ void Servo_OnCtrlIsr(void)
 
   p_act = Foc_EncoderGetPosition(&s_enc);
   v_act = Foc_EncoderGetVelocity(&s_enc);
-  /* Single-turn encoder: shortest-path error. 0 and 2π are the same angle. */
-  t_ref = (s_kd * (s_v_set - v_act)) + (s_kp * Foc_WrapAngleToPi(s_p_set - p_act));
+  t_ref = (s_kd * (s_v_set - v_act)) + (s_kp * (s_p_set - p_act)) + s_t_ff;
   s_t_ref = Foc_Clamp(t_ref, -CFG_V_LIMIT, CFG_V_LIMIT);
 }
 
@@ -161,12 +162,27 @@ void Servo_SetVoltageCmd(float d_v, float q_v)
   s_mode = SERVO_VOLTAGE;
 }
 
-void Servo_SetCommand(float p_set, float v_set, float kp, float kd)
+void Servo_SetMotion(float p_set, float v_set, float t_ff)
 {
-  s_p_set = Foc_Clamp(p_set, CFG_POS_CMD_MIN, CFG_POS_CMD_MAX);
+  s_p_set = p_set;
   s_v_set = Foc_Clamp(v_set, CFG_VEL_CMD_MIN, CFG_VEL_CMD_MAX);
+  s_t_ff = t_ff;
+}
+
+void Servo_SetGains(float kp, float kd)
+{
   s_kp = Foc_Clamp(kp, CFG_KP_MIN, CFG_KP_MAX);
   s_kd = Foc_Clamp(kd, CFG_KD_MIN, CFG_KD_MAX);
+}
+
+void Servo_SetZero(void)
+{
+  const uint32_t primask = __get_PRIMASK();
+
+  __disable_irq();
+  Foc_EncoderSetZero(&s_enc);
+  s_p_set = 0.0f;
+  __set_PRIMASK(primask);
 }
 
 void Servo_SetClosedLoopDir(int8_t dir)
@@ -191,6 +207,7 @@ void Servo_HoldPosition(void)
   __disable_irq();
   s_p_set = Foc_EncoderGetPosition(&s_enc);
   s_v_set = 0.0f;
+  s_t_ff = 0.0f;
   s_t_ref = 0.0f;
   __set_PRIMASK(primask);
 }
@@ -205,6 +222,7 @@ void Servo_GetTelemetry(ServoTelemetry_t *out)
   out->v_set = s_v_set;
   out->kp = s_kp;
   out->kd = s_kd;
+  out->t_ff = s_t_ff;
   out->t_ref = s_t_ref;
   out->p_act = Foc_EncoderGetPosition(&s_enc);
   out->v_act = Foc_EncoderGetVelocity(&s_enc);

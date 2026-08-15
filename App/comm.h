@@ -1,12 +1,14 @@
 #ifndef COMM_H
 #define COMM_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+void Comm_Init(uint8_t cali_ok);
 void Comm_Process(void);
-void Comm_SendFeedback(void);
 
 #ifdef __cplusplus
 }

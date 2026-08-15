@@ -11,7 +11,6 @@
 int main(void)
 {
   uint32_t last_dbg_ms = 0U;
-  uint32_t last_fb_ms = 0U;
   uint8_t cali_ok;
 
   Board_Init();
@@ -24,14 +23,13 @@ int main(void)
   Dbg_Printf("YFOCV3 LC-ESC voltage servo\r\n");
   Board_LedSet(1U);
   cali_ok = Cali_Start();
+  Comm_Init(cali_ok);
   if (cali_ok == 0U)
   {
     Dbg_Printf("cali failed\r\n");
   }
   else
   {
-    CtrlTimer_Start();
-    Servo_HoldPosition();
     Dbg_Printf("run\r\n");
   }
 
@@ -45,11 +43,6 @@ int main(void)
     Comm_Process();
 
     now = HAL_GetTick();
-    if ((now - last_fb_ms) >= CFG_FB_PERIOD_MS)
-    {
-      last_fb_ms = now;
-      Comm_SendFeedback();
-    }
     if ((now - last_dbg_ms) >= CFG_DEBUG_PERIOD_MS)
     {
       ServoTelemetry_t tel;
