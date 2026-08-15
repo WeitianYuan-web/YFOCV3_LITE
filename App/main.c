@@ -35,6 +35,7 @@ int main(void)
   }
 
   Board_LedSet(1U);
+  Servo_HoldPosition();
   Dbg_Printf("run\r\n");
 
   for (;;)

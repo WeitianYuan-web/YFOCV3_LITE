@@ -5,6 +5,7 @@
 #include "foc_math.h"
 #include "foc_svpwm.h"
 #include "pwm.h"
+#include "stm32g4xx.h"
 
 static Foc_Encoder_t s_enc;
 static volatile ServoMode_t s_mode = SERVO_IDLE;
@@ -154,6 +155,17 @@ void Servo_ZeroPosition(void)
   s_p_set = 0.0f;
   s_v_set = 0.0f;
   s_t_ref = 0.0f;
+}
+
+void Servo_HoldPosition(void)
+{
+  const uint32_t primask = __get_PRIMASK();
+
+  __disable_irq();
+  s_p_set = Foc_EncoderGetPosition(&s_enc);
+  s_v_set = 0.0f;
+  s_t_ref = 0.0f;
+  __set_PRIMASK(primask);
 }
 
 void Servo_GetTelemetry(ServoTelemetry_t *out)

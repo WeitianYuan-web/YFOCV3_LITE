@@ -6,7 +6,7 @@ extern "C" {
 #endif
 
 #define CFG_NODE_ID                 (1U)
-#define CFG_POLE_PAIRS              (7U)
+#define CFG_POLE_PAIRS              (10U)
 
 #define CFG_SYSCLK_HZ               (170000000UL)
 #define CFG_PWM_HZ                  (20000UL)
@@ -42,7 +42,7 @@ extern "C" {
 #define CFG_CALI_ROTATE_ELEC_RAD_S  (6.283185307179586f)    /* 1 electrical rev / s */
 #define CFG_CALI_ROTATE_MS          (1000U)
 #define CFG_CALI_MIN_MECH_DELTA     (0.05f)
-#define CFG_CALI_PROBE_VQ           (0.08f)
+#define CFG_CALI_PROBE_VQ           (0.12f)
 #define CFG_CALI_PROBE_MS           (400U)
 #define CFG_CALI_MIN_VEL            (0.3f)
 

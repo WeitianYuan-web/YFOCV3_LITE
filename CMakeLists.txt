@@ -8,7 +8,13 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release")
 endif()
 
-include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/gcc-arm-none-eabi.cmake")
+# Prefer CMAKE_TOOLCHAIN_FILE (CMake Presets / CLion) over include().
+# include() before project() is too late to override a host compiler CLion may inject,
+# and double-loads flags when the preset also sets toolchainFile.
+if(NOT CMAKE_TOOLCHAIN_FILE)
+    set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/gcc-arm-none-eabi.cmake"
+        CACHE FILEPATH "ARM GCC toolchain" FORCE)
+endif()
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 set(CMAKE_PROJECT_NAME YFOCV3)
@@ -80,17 +86,23 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     $<$<CONFIG:Debug>:DEBUG>
 )
 
+# Forward slashes: GNU ld on Windows rejects mixed/backslash -T paths.
+file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/Hw/stm32g431cbux_flash.ld" YFOC_LINKER_SCRIPT)
 target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
-    -T "${CMAKE_CURRENT_SOURCE_DIR}/Hw/stm32g431cbux_flash.ld"
+    -T "${YFOC_LINKER_SCRIPT}"
+    "LINKER:-Map=${CMAKE_PROJECT_NAME}.map"
 )
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
-    LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Hw/stm32g431cbux_flash.ld"
+    LINK_DEPENDS "${YFOC_LINKER_SCRIPT}"
 )
 
 target_link_libraries(${CMAKE_PROJECT_NAME} m)
 
+if(NOT CMAKE_OBJCOPY)
+    message(FATAL_ERROR "CMAKE_OBJCOPY is not set (arm-none-eabi-objcopy not found)")
+endif()
 add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${CMAKE_PROJECT_NAME}> ${CMAKE_PROJECT_NAME}.bin
-    COMMAND ${CMAKE_OBJCOPY} -O ihex $<TARGET_FILE:${CMAKE_PROJECT_NAME}> ${CMAKE_PROJECT_NAME}.hex
+    COMMAND "${CMAKE_OBJCOPY}" -O binary $<TARGET_FILE:${CMAKE_PROJECT_NAME}> ${CMAKE_PROJECT_NAME}.bin
+    COMMAND "${CMAKE_OBJCOPY}" -O ihex $<TARGET_FILE:${CMAKE_PROJECT_NAME}> ${CMAKE_PROJECT_NAME}.hex
     COMMENT "Generating bin/hex"
 )

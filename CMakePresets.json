@@ -19,5 +19,15 @@
                 "CMAKE_BUILD_TYPE": "Debug"
             }
         }
+    ],
+    "buildPresets": [
+        {
+            "name": "lc-voltage",
+            "configurePreset": "lc-voltage"
+        },
+        {
+            "name": "lc-voltage-debug",
+            "configurePreset": "lc-voltage-debug"
+        }
     ]
 }

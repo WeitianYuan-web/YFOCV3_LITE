@@ -42,6 +42,7 @@ void Servo_SetCommand(float p_set, float v_set, float kp, float kd);
 void Servo_SetClosedLoopDir(int8_t dir);
 void Servo_SetEncoderAlignment(int8_t encoder_dir, float electrical_offset_rad);
 void Servo_ZeroPosition(void);
+void Servo_HoldPosition(void);
 void Servo_GetTelemetry(ServoTelemetry_t *out);
 Foc_Encoder_t *Servo_GetEncoder(void);
 

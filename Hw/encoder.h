@@ -11,7 +11,10 @@ extern "C" {
 #define ENCODER_READ_INVALID  0xFFFFU
 
 void Encoder_Init(void);
+
+/* ISR/foreground SSI read. status_out may be NULL. */
 uint8_t Encoder_ReadRawFast(uint16_t *raw_out);
+uint8_t Encoder_ReadFrame(uint16_t *raw_out, uint8_t *status_out);
 
 #ifdef __cplusplus
 }

@@ -4,20 +4,53 @@
 
 ## 构建
 
-需要 `arm-none-eabi-gcc` 与 Ninja。
-
-```bash
-cd YFOCV3
-cmake --preset lc-voltage
-cmake --build build/lc-voltage
-```
+需要 `arm-none-eabi-gcc`（STM32CubeIDE / CubeCLT / Arm GNU Toolchain）与 CMake + Ninja。CMake 会在 PATH 以及常见 Windows 安装路径里查找这些工具，不必手动改环境变量。
 
 产物：`build/lc-voltage/YFOCV3.elf`、`YFOCV3.bin`。
 
-烧录示例（按你的探针改）：
+### Windows
+
+CLion：打开本仓库，选择 CMake preset `lc-voltage`，再 Build。
+
+命令行（会自动找 CLion 自带的 cmake）：
+
+```powershell
+.\scripts\build.ps1
+.\scripts\build.ps1 -Preset lc-voltage-debug
+```
+
+若 `cmake` / `ninja` 已在 PATH：
+
+```powershell
+cmake --preset lc-voltage
+cmake --build --preset lc-voltage
+```
+
+找不到编译器时，把工具链 `bin` 目录加入 PATH，或设置 `ARM_NONE_EABI_TOOLCHAIN_PATH`。
+
+### Linux
 
 ```bash
-st-flash write build/lc-voltage/YFOCV3.bin 0x08000000
+cmake --preset lc-voltage
+cmake --build --preset lc-voltage
+```
+
+### 烧录（OpenOCD）
+
+探针为 **CMSIS-DAP + SWD**（与 YFOCV3_ST 相同：`adapter driver cmsis-dap`）。先整片擦除再写入。
+
+```powershell
+.\scripts\flash.ps1
+.\scripts\flash.ps1 -BuildBeforeFlash
+.\scripts\flash.ps1 -Preset lc-voltage-debug
+```
+
+OpenOCD 默认 `D:\OpenOCD-20240916-0.12.0`。换路径时传 `-OpenOcdExe` / `-OpenOcdScripts`。
+
+```bash
+openocd -s /path/to/openocd/scripts -f scripts/openocd-stm32g431.cfg \
+  -c "init" -c "reset halt" -c "stm32l4x mass_erase 0" \
+  -c "program build/lc-voltage/YFOCV3.elf verify" -c "reset run" -c "shutdown"
 ```
 
 ## 硬件
@@ -44,7 +77,7 @@ PWM 20 kHz 中心对齐；TIM6 4 kHz 运控；无电流采样。
 
 失败：LED 快闪，PWM 关闭。成功：LED 常亮，进入运控。当前位置定义为位置 0。
 
-默认极对数 `CFG_POLE_PAIRS=7`，在 `App/config.h` 修改。
+默认极对数 `CFG_POLE_PAIRS=10`，在 `App/config.h` 修改。
 
 校准电压/时长也在 `config.h`：过大发热，过小可能锁不住或判失败。
 
@@ -89,7 +122,23 @@ t_ref = clamp(t_ref, -V_LIMIT, +V_LIMIT)
 
 ## 上位机
 
+先建虚拟环境再装依赖。
+
+Windows（PowerShell）：
+
+```powershell
+python -m venv host\.venv
+.\host\.venv\Scripts\Activate.ps1
+pip install -r host/requirements.txt
+python host\servo_host.py --channel can0 --id 1 --pos 0 --vel 0 --kp 20 --kd 0.5
+python host\servo_host.py --channel can0 --id 1 --listen
+```
+
+Linux / macOS：
+
 ```bash
+python3 -m venv host/.venv
+source host/.venv/bin/activate
 pip install -r host/requirements.txt
 python3 host/servo_host.py --channel can0 --id 1 --pos 0 --vel 0 --kp 20 --kd 0.5
 python3 host/servo_host.py --channel can0 --id 1 --listen
