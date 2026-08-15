@@ -11,6 +11,85 @@
 #include "servo.h"
 #include "stm32g4xx_hal.h"
 
+#define CALI_ST_IDLE         (0x00U)
+#define CALI_ST_RUNNING      (0x01U)
+#define CALI_ST_SUCCESS      (0x02U)
+#define CALI_ST_FAILED       (0x03U)
+
+#define CALI_STAGE_IDLE      (0x00U)
+#define CALI_STAGE_PRE_CHECK (0x01U)
+#define CALI_STAGE_ALIGN     (0x02U)
+#define CALI_STAGE_SAMPLE    (0x03U)
+#define CALI_STAGE_CALC      (0x04U)
+#define CALI_STAGE_SAVE      (0x05U)
+#define CALI_STAGE_COMPLETE  (0x06U)
+
+#define CALI_ERR_NONE        (0x0000U)
+#define CALI_ERR_ENCODER     (0x0002U)
+#define CALI_ERR_DATA        (0x0004U)
+#define CALI_ERR_SAVE        (0x0005U)
+
+static uint8_t s_rpt_en;
+static uint8_t s_rpt_seq;
+static uint8_t s_rpt_state;
+static uint8_t s_rpt_progress;
+static uint8_t s_rpt_stage;
+static uint16_t s_rpt_error;
+static uint32_t s_rpt_last_ms;
+
+static void Cali_SendReport(void)
+{
+  uint8_t data[8] = {0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U};
+
+  if (s_rpt_en == 0U)
+  {
+    return;
+  }
+
+  data[0] = s_rpt_seq;
+  data[1] = s_rpt_state;
+  data[2] = s_rpt_progress;
+  data[3] = s_rpt_stage;
+  data[4] = (uint8_t)(s_rpt_error & 0xFFU);
+  data[5] = (uint8_t)(s_rpt_error >> 8);
+  (void)Can_Send(CFG_CAN_CALI_RPT_BASE + CFG_NODE_ID, data);
+  s_rpt_last_ms = HAL_GetTick();
+}
+
+static void Cali_SetReport(uint8_t state, uint8_t progress, uint8_t stage, uint16_t err)
+{
+  const uint8_t stage_changed = (stage != s_rpt_stage) ? 1U : 0U;
+
+  s_rpt_state = state;
+  s_rpt_progress = progress;
+  s_rpt_stage = stage;
+  s_rpt_error = err;
+  if ((s_rpt_en != 0U) &&
+      ((stage_changed != 0U) ||
+       ((HAL_GetTick() - s_rpt_last_ms) >= CFG_CALI_REPORT_MS)))
+  {
+    Cali_SendReport();
+  }
+}
+
+static void Cali_Delay(uint32_t ms)
+{
+  const uint32_t t0 = HAL_GetTick();
+
+  while ((HAL_GetTick() - t0) < ms)
+  {
+    if (s_rpt_en != 0U)
+    {
+      if ((HAL_GetTick() - s_rpt_last_ms) >= CFG_CALI_REPORT_MS)
+      {
+        Cali_SendReport();
+      }
+      Can_Service();
+    }
+    HAL_Delay(1U);
+  }
+}
+
 static uint8_t Cali_ReadRawMech(float *out)
 {
   uint16_t raw;
@@ -23,9 +102,14 @@ static uint8_t Cali_ReadRawMech(float *out)
   return 1U;
 }
 
-static void Cali_Fail(const char *why)
+static void Cali_Fail(const char *why, uint16_t err)
 {
   Dbg_Printf("%s\r\n", why);
+  Cali_SetReport(CALI_ST_FAILED, s_rpt_progress, s_rpt_stage, err);
+  if (s_rpt_en != 0U)
+  {
+    Cali_SendReport();
+  }
   Pwm_DisableOutputs();
   Servo_SetMode(SERVO_FAULT);
 }
@@ -51,7 +135,7 @@ static uint8_t Cali_RotateMeasure(float *delta_mech_out)
   t0 = HAL_GetTick();
   while ((HAL_GetTick() - t0) < CFG_CALI_ROTATE_MS)
   {
-    HAL_Delay(CFG_CALI_ROTATE_SAMPLE_MS);
+    Cali_Delay(CFG_CALI_ROTATE_SAMPLE_MS);
     if (Cali_ReadRawMech(&theta) == 0U)
     {
       return 0U;
@@ -103,27 +187,29 @@ static uint8_t Cali_Run(void)
   int8_t encoder_dir = 1;
   int8_t closed_loop_dir = 1;
 
+  Cali_SetReport(CALI_ST_RUNNING, 10U, CALI_STAGE_ALIGN, CALI_ERR_NONE);
   Pwm_EnableOutputs();
   Servo_SetOpenloop(CFG_CALI_LOCK_V, 0.0f, 0.0f, 0.0f);
-  HAL_Delay(CFG_CALI_LOCK_MS);
+  Cali_Delay(CFG_CALI_LOCK_MS);
   if (Cali_ReadRawMech(&theta0) == 0U)
   {
-    Cali_Fail("cali: enc fail");
+    Cali_Fail("cali: enc fail", CALI_ERR_ENCODER);
     return 0U;
   }
 
+  Cali_SetReport(CALI_ST_RUNNING, 25U, CALI_STAGE_SAMPLE, CALI_ERR_NONE);
   if (Cali_RotateMeasure(&delta) == 0U)
   {
-    Cali_Fail("cali: enc fail");
+    Cali_Fail("cali: enc fail", CALI_ERR_ENCODER);
     return 0U;
   }
 
   Servo_SetOpenloop(CFG_CALI_LOCK_V, 0.0f, 0.0f, 0.0f);
-  HAL_Delay(80U);
+  Cali_Delay(80U);
 
   if ((delta > -CFG_CALI_MIN_MECH_DELTA) && (delta < CFG_CALI_MIN_MECH_DELTA))
   {
-    Cali_Fail("cali: no motion");
+    Cali_Fail("cali: no motion", CALI_ERR_DATA);
     return 0U;
   }
 
@@ -134,15 +220,16 @@ static uint8_t Cali_Run(void)
 
   if (Cali_EstimatePolePairs(delta, &pole_pairs) == 0U)
   {
-    Cali_Fail("cali: pp bad");
+    Cali_Fail("cali: pp bad", CALI_ERR_DATA);
     return 0U;
   }
 
+  Cali_SetReport(CALI_ST_RUNNING, 60U, CALI_STAGE_CALC, CALI_ERR_NONE);
   Servo_SetOpenloop(CFG_CALI_LOCK_V, 0.0f, 0.0f, 0.0f);
-  HAL_Delay(CFG_CALI_LOCK_MS);
+  Cali_Delay(CFG_CALI_LOCK_MS);
   if (Cali_ReadRawMech(&theta0) == 0U)
   {
-    Cali_Fail("cali: enc fail");
+    Cali_Fail("cali: enc fail", CALI_ERR_ENCODER);
     return 0U;
   }
 
@@ -154,14 +241,14 @@ static uint8_t Cali_Run(void)
 
   Servo_SetClosedLoopDir(1);
   Servo_SetVoltageCmd(0.0f, CFG_CALI_PROBE_VQ);
-  HAL_Delay(CFG_CALI_PROBE_MS);
+  Cali_Delay(CFG_CALI_PROBE_MS);
   vel = Foc_EncoderGetVelocity(Servo_GetEncoder());
   Servo_SetVoltageCmd(0.0f, 0.0f);
-  HAL_Delay(80U);
+  Cali_Delay(80U);
 
   if ((vel > -CFG_CALI_MIN_VEL) && (vel < CFG_CALI_MIN_VEL))
   {
-    Cali_Fail("cali: probe vel small");
+    Cali_Fail("cali: probe vel small", CALI_ERR_DATA);
     return 0U;
   }
 
@@ -198,7 +285,7 @@ static uint8_t Cali_ApplySaved(const CaliNvData_t *nv)
   }
   if (Foc_EncoderIsReady(enc) == 0U)
   {
-    Cali_Fail("cali: enc fail");
+    Cali_Fail("cali: enc fail", CALI_ERR_ENCODER);
     return 0U;
   }
 
@@ -223,7 +310,7 @@ static void Cali_ResumeRun(void)
   Servo_SetMode(SERVO_RUN);
 }
 
-static void Cali_SaveCurrent(void)
+static uint8_t Cali_SaveCurrent(void)
 {
   CaliNvData_t nv;
   ServoTelemetry_t tel;
@@ -243,12 +330,52 @@ static void Cali_SaveCurrent(void)
   if (CaliNv_Save(&nv) == 0U)
   {
     Dbg_Printf("cali: save fail\r\n");
-    Cali_ResumeRun();
-    return;
+    Can_Restart();
+    return 0U;
   }
 
   Cali_ResumeRun();
   Dbg_Printf("cali: saved pp=%d\r\n", (int)nv.pole_pairs);
+  return 1U;
+}
+
+uint8_t Cali_RunCommand(uint8_t seq)
+{
+  s_rpt_en = 1U;
+  s_rpt_seq = seq;
+  s_rpt_state = CALI_ST_RUNNING;
+  s_rpt_progress = 5U;
+  s_rpt_stage = CALI_STAGE_PRE_CHECK;
+  s_rpt_error = CALI_ERR_NONE;
+  s_rpt_last_ms = 0U;
+  Cali_SendReport();
+
+  Servo_SetMode(SERVO_IDLE);
+  Pwm_ApplyDuty(FOC_PWM_NEUTRAL_DUTY, FOC_PWM_NEUTRAL_DUTY, FOC_PWM_NEUTRAL_DUTY);
+  Servo_HoldPosition();
+
+  if (Cali_Run() == 0U)
+  {
+    s_rpt_en = 0U;
+    return 0U;
+  }
+
+  Cali_SetReport(CALI_ST_RUNNING, 90U, CALI_STAGE_SAVE, CALI_ERR_NONE);
+  Cali_SendReport();
+  if (Cali_SaveCurrent() == 0U)
+  {
+    Cali_Fail("cali: save fail", CALI_ERR_SAVE);
+    s_rpt_en = 0U;
+    return 0U;
+  }
+
+  s_rpt_progress = 100U;
+  s_rpt_stage = CALI_STAGE_COMPLETE;
+  s_rpt_state = CALI_ST_SUCCESS;
+  s_rpt_error = CALI_ERR_NONE;
+  Cali_SendReport();
+  s_rpt_en = 0U;
+  return 1U;
 }
 
 uint8_t Cali_Start(void)
@@ -261,12 +388,5 @@ uint8_t Cali_Start(void)
   }
 
   Dbg_Printf("cali: no nv, run\r\n");
-  Can_StopForFlash();
-  if (Cali_Run() == 0U)
-  {
-    Can_Restart();
-    return 0U;
-  }
-  Cali_SaveCurrent();
-  return 1U;
+  return Cali_RunCommand(0U);
 }

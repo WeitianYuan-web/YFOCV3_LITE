@@ -8,6 +8,7 @@ extern "C" {
 #endif
 
 uint8_t Cali_Start(void);
+uint8_t Cali_RunCommand(uint8_t seq);
 
 #ifdef __cplusplus
 }

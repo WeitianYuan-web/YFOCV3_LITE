@@ -277,8 +277,10 @@ class HostGui:
         ttk.Button(mode_row, text="发送", command=self.send_set_mode).pack(side="left", padx=6)
         ttk.Label(
             tab,
-            text="当前固件：SET_ZERO / GET_STATUS / SET_CONTROL_MODE(MOTION) 可用。\n"
-            "ENABLE/DISABLE/校准/速度位置模式会返回 INVALID_COMMAND 或被忽略。",
+            text="当前固件：SET_ZERO / GET_STATUS / SET_CONTROL_MODE(MOTION) / START_CALI 可用。\n"
+            "START_CALI 会先 ACK(CALIBRATING)，再约 50 ms 上报 0x3C0；成功后直接回 RUNNING。\n"
+            "失败后需 CLEAR_FAULT 再重试。ENABLE/DISABLE 与速度/位置模式仍会失败或被忽略。\n"
+            "校准期间电机会开环转动，请先停掉 Motion 循环发送。",
         ).grid(row=2, column=0, sticky="w", padx=4, pady=8)
 
     def _log(self, text: str) -> None:
@@ -483,7 +485,8 @@ class HostGui:
                 elif kind == "cali":
                     self._log(
                         f"CALI seq={payload['seq']} {payload['state_name']} "
-                        f"{payload['progress']}% stage={payload['stage_name']} err={payload['error']}"
+                        f"{payload['progress']}% stage={payload['stage_name']} "
+                        f"err={payload['error_name']}"
                     )
                 elif kind == "error":
                     self._log(f"ERROR {payload}")

@@ -1,7 +1,9 @@
 #include "comm.h"
 
+#include "cali.h"
 #include "can.h"
 #include "config.h"
+#include "pwm.h"
 #include "servo.h"
 
 #define COMM_MODE_MOTION            (0x00U)
@@ -10,6 +12,7 @@
 
 #define COMM_STATE_RUNNING          (0x02U)
 #define COMM_STATE_FAULT            (0x03U)
+#define COMM_STATE_CALIBRATING      (0x04U)
 
 #define COMM_CMD_SET_ZERO           (0x03U)
 #define COMM_CMD_CLEAR_FAULT        (0x04U)
@@ -23,6 +26,7 @@
 #define COMM_RES_INVALID_STATE      (0x02U)
 #define COMM_RES_OUT_OF_RANGE       (0x03U)
 #define COMM_RES_FAULT_ACTIVE       (0x04U)
+#define COMM_RES_BUSY               (0x05U)
 
 #define COMM_FAULT_CALIBRATION      (1U << 10)
 
@@ -34,6 +38,7 @@ static uint8_t s_last_seq;
 static uint8_t s_have_cache;
 static uint32_t s_cache_id;
 static uint8_t s_cache_data[8];
+static uint8_t s_drop_pending_motion;
 
 static uint16_t Comm_ReadU16Le(const uint8_t *p)
 {
@@ -104,6 +109,15 @@ static uint8_t Comm_ReservedZero(const uint8_t *p, uint8_t offset)
 static void Comm_SendRaw(uint32_t id, const uint8_t data[8])
 {
   (void)Can_Send(id, data);
+}
+
+static void Comm_FlushRx(void)
+{
+  CanFrame_t dump;
+
+  while (Can_PopRx(&dump) != 0U)
+  {
+  }
 }
 
 static void Comm_CacheSend(uint32_t id, uint8_t cmd, uint8_t seq, const uint8_t data[8])
@@ -242,8 +256,15 @@ static void Comm_HandleMgmt(const uint8_t *d)
       }
       if (s_state == COMM_STATE_FAULT)
       {
-        Comm_SendAck(cmd, seq, COMM_RES_FAULT_ACTIVE);
-        break;
+        if (s_fault != COMM_FAULT_CALIBRATION)
+        {
+          Comm_SendAck(cmd, seq, COMM_RES_FAULT_ACTIVE);
+          break;
+        }
+        s_fault = 0U;
+        s_state = COMM_STATE_RUNNING;
+        Servo_SetMode(SERVO_IDLE);
+        Pwm_DisableOutputs();
       }
       Comm_SendAck(cmd, seq, COMM_RES_OK);
       break;
@@ -278,6 +299,37 @@ static void Comm_HandleMgmt(const uint8_t *d)
       break;
 
     case COMM_CMD_START_CALI:
+      if (Comm_ReservedZero(d, 2U) == 0U)
+      {
+        Comm_SendAck(cmd, seq, COMM_RES_OUT_OF_RANGE);
+        break;
+      }
+      if (s_state == COMM_STATE_FAULT)
+      {
+        Comm_SendAck(cmd, seq, COMM_RES_FAULT_ACTIVE);
+        break;
+      }
+      if (s_state == COMM_STATE_CALIBRATING)
+      {
+        Comm_SendAck(cmd, seq, COMM_RES_BUSY);
+        break;
+      }
+      s_state = COMM_STATE_CALIBRATING;
+      Comm_SendAck(cmd, seq, COMM_RES_OK);
+      if (Cali_RunCommand(seq) != 0U)
+      {
+        s_state = COMM_STATE_RUNNING;
+        s_fault = 0U;
+      }
+      else
+      {
+        s_state = COMM_STATE_FAULT;
+        s_fault = COMM_FAULT_CALIBRATION;
+      }
+      Comm_FlushRx();
+      s_drop_pending_motion = 1U;
+      break;
+
     default:
       Comm_SendAck(cmd, seq, COMM_RES_INVALID_COMMAND);
       break;
@@ -288,6 +340,7 @@ void Comm_Init(uint8_t cali_ok)
 {
   s_ctrl_mode = COMM_MODE_MOTION;
   s_have_cache = 0U;
+  s_drop_pending_motion = 0U;
   if (cali_ok != 0U)
   {
     s_state = COMM_STATE_RUNNING;
@@ -334,11 +387,20 @@ void Comm_Process(void)
     }
   }
 
+  if (s_drop_pending_motion != 0U)
+  {
+    s_drop_pending_motion = 0U;
+    have_motion = 0U;
+  }
   if (have_motion == 0U)
   {
     return;
   }
-  if (s_state == COMM_STATE_FAULT)
+  if (s_state != COMM_STATE_RUNNING)
+  {
+    return;
+  }
+  if (Servo_GetMode() != SERVO_RUN)
   {
     return;
   }
@@ -348,6 +410,5 @@ void Comm_Process(void)
   }
 
   Servo_SetMotion(p_set, v_set, t_ff);
-  s_state = COMM_STATE_RUNNING;
   Comm_SendFeedback();
 }

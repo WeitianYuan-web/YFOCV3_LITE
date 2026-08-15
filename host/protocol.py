@@ -75,6 +75,16 @@ CMD_NAME = {
     CMD_SET_GAINS: "SET_GAINS",
 }
 
+CALI_ERROR_NAME = {
+    0x0000: "NO_ERROR",
+    0x0001: "INVALID_STATE",
+    0x0002: "ENCODER_SIGNAL_ERROR",
+    0x0003: "CALIBRATION_TIMEOUT",
+    0x0004: "CALIBRATION_DATA_INVALID",
+    0x0005: "PARAMETER_SAVE_FAILED",
+    0x0006: "MOTOR_CONTROL_ERROR",
+    0x00FF: "INTERNAL_ERROR",
+}
 CALI_STATE_NAME = {0x00: "IDLE", 0x01: "RUNNING", 0x02: "SUCCESS", 0x03: "FAILED"}
 CALI_STAGE_NAME = {
     0x00: "IDLE",
@@ -225,6 +235,7 @@ def unpack_cali(data: bytes) -> dict[str, int | str]:
         "stage": stage,
         "stage_name": CALI_STAGE_NAME.get(stage, f"0x{stage:02X}"),
         "error": err,
+        "error_name": CALI_ERROR_NAME.get(err, f"0x{err:04X}"),
     }
 
 

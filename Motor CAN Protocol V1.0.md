@@ -1,5 +1,52 @@
 # Motor CAN Protocol V1.0
 
+> 以下为协议原文。标注 **「本固件」** 的段落描述 YFOCV3_LITE（电压模式伺服）的实际行为，**不修改原文条款**。未标注处按原文实现。
+
+## 本固件实现标注（YFOCV3_LITE）
+
+本固件无转矩环、无 `ENABLE`/`DISABLE`/`DISABLED`/`READY`。上电校准或加载 Flash NV 成功后直接 `RUNNING`。
+
+### 已实现
+
+| 项目 | 说明 |
+|---|---|
+| Motion `0x100` | 电压模式：Position / Velocity / `VoltageFF = Raw/65535`；有效帧后回 `0x300`；同一次 RX 处理只执行最后一帧有效 Motion |
+| Gains `0x180` | 仅 `MOTION_MODE`；Ki 必须为 0；Kp `0.01 pu/rad`，Kd `0.001 pu·s/rad`；ACK `0x280` Command=`0x20` |
+| SET_ZERO / GET_STATUS / SET_CONTROL_MODE(MOTION) | 已接入 |
+| CLEAR_FAULT | 可清除闩锁的 `CALIBRATION_FAULT` |
+| START_ENCODER_CALIBRATION + `0x3C0` | 先 ACK 再校准；约 50 ms 上报，Stage 变化立即多发一帧 |
+| 非实时重发 | 相同 Command+Sequence 重发缓存应答，不重复执行 |
+| 上电无 NV | 与 CAN 校准共用 `Cali_RunCommand`，同样发 `0x3C0`（Sequence=0，无 ACK） |
+
+### 与原文的差别
+
+| 原文 | 本固件 |
+|---|---|
+| 上电 `DISABLED`，`ENABLE` → `READY`，有效实时命令 → `RUNNING` | 上电校准/加载成功 → `RUNNING`；失败 → `FAULT` + `CALIBRATION_FAULT` |
+| 停止控制前必须 `DISABLE` | 无 `DISABLE`；保持最后一帧有效 Motion，直到新 Motion、校准、FAULT 或掉电 |
+| `START_ENCODER_CALIBRATION` 仅 `DISABLED`；成功后回 `DISABLED`，需再 `ENABLE` | `RUNNING` 下可启动；成功后回 `RUNNING` |
+| `SET_CONTROL_MODE` 仅 `DISABLED`/`READY` | `RUNNING` 下可设 `MOTION_MODE`；`VELOCITY`/`POSITION` 返回 `PARAMETER_OUT_OF_RANGE` |
+| 校准成功 Motor State=`DISABLED` | 校准成功 Motor State=`RUNNING` |
+| 校准失败后 `CLEAR_FAULT` 再 `START_CALI`（后者原文要求 `DISABLED`） | 清除校准故障后 State=`RUNNING`，PWM 关闭、伺服 IDLE，须再校准成功才接受 Motion |
+| Feedback Torque = `0.001 Nm/LSB` | 无转矩传感器；Byte6~7 为电压指令 `0.001 pu/LSB` |
+| 校准期间可处理其他非实时命令 | 校准阻塞主循环数秒；期间不处理 GET_STATUS/Motion；结束后丢弃积压的运控帧 |
+| 写参数期间 CAN 保持 | 写 Flash 时短暂停 CAN，`PARAMETER_SAVE` 阶段上报可能有缺口 |
+
+### 未实现
+
+| 项目 | 当前行为 |
+|---|---|
+| Velocity 模式 `0x140`、速度 PI Gains | 过滤器收包，不执行、不回 Feedback；设该模式 Gains/`SET_CONTROL_MODE` → `PARAMETER_OUT_OF_RANGE` |
+| Position 模式 `0x1C0`、位置 PID Gains | 同上 |
+| `ENABLE` `0x01` / `DISABLE` `0x02` | `INVALID_COMMAND` |
+| 转矩模式编码（Motion FF / Gains / Feedback） | 本固件固定为电压模式 |
+| 母线电压、电机温度、Warning 位 | `GET_STATUS` 对应字段填 0 |
+| 过温/过流/过压/欠压/堵转等故障检测 | 不置位；目前仅使用 `CALIBRATION_FAULT` |
+| `0x380` 主动 Fault Event | 不主动上报，仅响应 `GET_STATUS` |
+| 校准错误码 `INVALID_STATE` / `TIMEOUT` / `MOTOR_CONTROL_ERROR` / `INTERNAL_ERROR` | 未使用；现用 `ENCODER_SIGNAL_ERROR`、`CALIBRATION_DATA_INVALID`、`PARAMETER_SAVE_FAILED` |
+
+---
+
 ## 1. 基础定义
 
 ```text
@@ -25,6 +72,8 @@ CAN ID 分配：
 | `0x380 + ID` | 电机 → 主机 | Status Response |
 | `0x3C0 + ID` | 电机 → 主机 | Encoder Calibration Report |
 
+> **本固件：** `0x140` / `0x1C0` 硬件过滤会收包但不执行。`0x380` 只作为 `GET_STATUS` 应答，不主动发 Fault Event。
+
 ### Control Mode
 
 ```text
@@ -34,6 +83,8 @@ CAN ID 分配：
 ```
 
 Control Mode 由 `SET_CONTROL_MODE` 管理命令显式切换。上电默认模式为 `MOTION_MODE`。
+
+> **本固件：** 仅 `MOTION_MODE` 可运行。`SET_CONTROL_MODE` 设为速度/位置模式返回 `PARAMETER_OUT_OF_RANGE`，当前模式保持 `MOTION_MODE`。
 
 ---
 
@@ -58,6 +109,8 @@ Control Mode 必须先通过 `SET_CONTROL_MODE` 选择。驱动器只接受与�
 收到其他模式的实时控制命令时，驱动器不执行该帧，也不返回 Motion Feedback。三种有效实时控制命令均使用 `Motion Feedback (0x300 + ID)` 作为反馈。
 
 协议不设置实时命令超时保护。进入 RUNNING 后，驱动器持续保持最后一帧有效实时控制命令，直到收到同模式的新命令、DISABLE、进入 FAULT 或掉电。上位机停止周期控制前必须主动发送 DISABLE。
+
+> **本固件：** 无 `DISABLE`。停止运动需自行发目标（例如当前位置、速度 0、增益 0），或断电。`CLEAR_FAULT` 清校准故障后 PWM 关闭，此时 Motion 不执行。
 
 ## 2.1 Motion Command
 
@@ -112,6 +165,8 @@ Raw = 65535   → VoltageFF = 1.0
 
 其实际电压由固件的母线电压、调制方式和电压限幅决定。主机必须根据目标固件的输出模式编码 Byte6~7，不能将转矩模式的 `int16` 数值直接用于电压模式。
 
+> **本固件：** 固定电压模式。`VoltageFF` 按上表 `uint16 / 65535`。速度目标超出 `±100 rad/s` 的 Motion 帧视为无效：不执行、不覆盖上一帧、不回 Feedback。电压指令再限幅 `CFG_V_LIMIT`（默认 0.4 pu）。
+
 转矩模式控制律：
 
 \[
@@ -155,6 +210,8 @@ Motion Command **没有额外 ACK**，`0x300 + ID` 即为它的反馈帧。一�
 ---
 
 ## 2.2 Velocity Mode Command
+
+> **本固件：未实现。** 收包后忽略，不执行、不返回 Motion Feedback。
 
 速度模式使用电机内部速度环，控制量为 4 Byte 目标速度。
 
@@ -202,6 +259,8 @@ Velocity Mode Command 没有额外 ACK。一次接收处理中存在多帧实时
 ---
 
 ## 2.3 Position Mode Command
+
+> **本固件：未实现。** 收包后忽略，不执行、不返回 Motion Feedback。
 
 位置模式采用位置外环、速度内环。控制量为 4 Byte 目标位置和 4 Byte 最大速度。
 
@@ -268,6 +327,8 @@ DLC = 8
 | 4~5 | Velocity Actual | `int16` | `0.1 rad/s/LSB` |
 | 6~7 | Torque Actual | `int16` | `0.001 Nm/LSB` |
 
+> **本固件：** Byte6~7 填当前电压指令 `t_ref`，分辨率 `0.001 pu/LSB`（协议 Torque 字段；无转矩传感器）。位置为连续多圈机械角，与原文一致。
+
 ```text
 Byte0  Position[7:0]
 Byte1  Position[15:8]
@@ -301,6 +362,8 @@ Position = -2π                反向 1 圈
 ---
 
 # 4. Control Gains
+
+> **本固件：** 仅接受 `MOTION_MODE` Gains（Ki 必须为 0）。`VELOCITY_MODE` / `POSITION_MODE` 返回 `PARAMETER_OUT_OF_RANGE`，原参数不变。有效范围受 `config.h` 限制（Kp 0~500 pu/rad，Kd 0~5 pu·s/rad）。
 
 根据 Control Mode 分别设置运控模式的 `Kp/Kd`、速度模式速度环的 `Kp/Ki`，以及位置模式位置外环的 `Kp/Ki/Kd`。
 
@@ -454,6 +517,8 @@ Command 定义：
 0x10  GET_STATUS
 ```
 
+> **本固件：** `ENABLE`/`DISABLE` → `INVALID_COMMAND`。其余命令见各节标注。
+
 ## 5.1 SET_CONTROL_MODE
 
 显式切换驱动器当前使用的实时控制模式。
@@ -490,6 +555,8 @@ READY
 Result = INVALID_STATE
 ```
 
+> **本固件：** 无 `DISABLED`/`READY`。`RUNNING` 下设置 `MOTION_MODE` 返回 `OK`。设置 `VELOCITY_MODE`/`POSITION_MODE` 返回 `PARAMETER_OUT_OF_RANGE`（不是 `INVALID_STATE`）。`FAULT` 时返回 `INVALID_STATE`。无积分器可清。
+
 切换成功后：
 
 ```text
@@ -521,6 +588,8 @@ Control Mode 非法或 Byte3~7 不为 0 时返回 `PARAMETER_OUT_OF_RANGE`。
 ---
 
 # 6. ENABLE
+
+> **本固件：未实现。** 返回 `INVALID_COMMAND`。上电校准/加载成功后 PWM 已开，无需 ENABLE。
 
 请求：
 
@@ -554,6 +623,8 @@ Byte2~7 = 0
 
 # 7. DISABLE
 
+> **本固件：未实现。** 返回 `INVALID_COMMAND`。
+
 请求：
 
 ```text
@@ -583,6 +654,8 @@ ACK
 
 # 8. SET_ZERO
 
+> **本固件：** `RUNNING` 下可用。`FAULT` 时返回 `FAULT_ACTIVE`。
+
 请求：
 
 ```text
@@ -608,6 +681,8 @@ Position = 0
 
 # 9. CLEAR_FAULT
 
+> **本固件：** 目前只有闩锁的 `CALIBRATION_FAULT`。该位可被清除：State 变为 `RUNNING`，PWM 关闭、伺服 IDLE，随后须再 `START_ENCODER_CALIBRATION`。其它故障位若将来置位且条件仍在，返回 `FAULT_ACTIVE`。
+
 请求：
 
 ```text
@@ -632,6 +707,12 @@ Result = FAULT_ACTIVE
 ---
 
 # 10. START_ENCODER_CALIBRATION
+
+> **本固件：**
+> - 允许在 `RUNNING` 启动（原文仅 `DISABLED`）。`FAULT` → `FAULT_ACTIVE`。
+> - ACK `OK` 且 State=`CALIBRATING` 后阻塞执行数秒；成功后 Motor State=`RUNNING`（原文为 `DISABLED`）。
+> - 上电无 NV 时走同一流程并发 `0x3C0`，Sequence=0，没有本命令的 ACK。
+> - 写 Flash 时短暂停 CAN。
 
 启动编码器校准。
 
@@ -780,6 +861,8 @@ Range = 0 ~ 100
 0x00FF  INTERNAL_ERROR
 ```
 
+> **本固件：** 实际会报的错误码：`0x0002` 编码器、`0x0004` 数据无效（无运动/极对数/探测速度过小）、`0x0005` 写 Flash 失败。其余错误码未使用。
+
 ---
 
 ## 上报规则
@@ -810,6 +893,8 @@ State = RUNNING
 
 当 Stage 发生变化时立即额外发送一次。
 
+> **本固件：** 周期 50 ms，Stage 变化立即发送。校准在主循环阻塞执行，上报由延时循环里直接 `Can_Send`。写 Flash 期间 CAN 暂停，SAVE 阶段可能出现上报缺口。
+
 ---
 
 ## 校准成功
@@ -830,6 +915,8 @@ Motor State = DISABLED
 ```
 
 电机需要重新收到 `ENABLE` 才允许进入运行状态。
+
+> **本固件：** 成功后 Motor State=`RUNNING`，PWM 打开并保持当前位置，不需要 ENABLE。
 
 ---
 
@@ -861,6 +948,8 @@ CLEAR_FAULT
 ---
 
 # 12. GET_STATUS
+
+> **本固件：** 校准阻塞期间不会应答本命令。母线电压、温度、Warning 填 0。校准结束后才处理积压帧。
 
 请求：
 
@@ -914,6 +1003,8 @@ DLC = 8
 0x04  CALIBRATING
 ```
 
+> **本固件：** 不使用 `DISABLED`、`READY`。上电路径：校准/加载成功 → `RUNNING`；失败 → `FAULT`。CAN 校准：`RUNNING` → `CALIBRATING` → `RUNNING` 或 `FAULT`。`CLEAR_FAULT` 清校准故障后 State 显示 `RUNNING`，但此时尚未恢复运控输出。
+
 状态转换：
 
 ```text
@@ -935,6 +1026,8 @@ CALIBRATING
    ↓ SUCCESS
 DISABLED
 ```
+
+> **本固件：** 成功路径为 `CALIBRATING` → `RUNNING`。
 
 ---
 
@@ -966,9 +1059,13 @@ bit11~15 Reserved
 
 多个故障允许同时置位。
 
+> **本固件：未实现** 过温/过流/过压/欠压/编码器运行时故障/堵转/驱动/位置误差/缺相检测。当前仅置位 `bit10 CALIBRATION_FAULT`。
+
 ---
 
 # 15. Bus Voltage
+
+> **本固件：未实现。** `GET_STATUS` 填 0。
 
 ```text
 uint16
@@ -985,6 +1082,8 @@ Voltage(V) = Raw × 0.01
 
 # 16. Motor Temperature
 
+> **本固件：未实现。** `GET_STATUS` 填 0。
+
 ```text
 int16
 0.1 °C / LSB
@@ -999,6 +1098,8 @@ Temperature(°C) = Raw × 0.1
 ---
 
 # 17. Warning / Control Mode
+
+> **本固件：** Warning 各位填 0。`bit5~6` 回报当前 Control Mode（恒为 `MOTION_MODE`，除非将来扩展）。
 
 ```text
 Byte7
@@ -1075,6 +1176,8 @@ Result：
 0x06  INTERNAL_ERROR
 ```
 
+> **本固件：** `ENABLE`/`DISABLE` 及未知 Command → `INVALID_COMMAND`。`BUSY` 预留给 State=`CALIBRATING` 时的第二条启动命令；当前校准阻塞主循环，通常发不出这条。`INTERNAL_ERROR` 未使用。
+
 ---
 
 # 19. 应答规则
@@ -1092,6 +1195,8 @@ Result：
 | `START_ENCODER_CALIBRATION` | **先 `ACK 0x280`，随后主动发送 `Calibration Report 0x3C0`** |
 | `SET_CONTROL_MODE` | **`Command ACK 0x280`** |
 | `GET_STATUS` | **`Status Response 0x380`** |
+
+> **本固件：** `0x140`/`0x1C0` 不回 Feedback。`ENABLE`/`DISABLE` 仍回 `0x280`，Result=`INVALID_COMMAND`。
 
 表中的实时控制命令应答表示正常的单帧处理结果；如果一次接收处理中积累了多帧实时控制命令，不要求逐帧返回 Motion Feedback，按照下述合并规则处理。
 
@@ -1141,6 +1246,8 @@ Result：
 
 当实时控制命令与 Control Gains、Management Command 同时积压时，驱动器先按接收顺序处理参数和管理命令，再根据处理后的 Motor State 和 Control Mode 校验并执行最新实时控制命令。这使 DISABLE、SET_CONTROL_MODE、故障处理等管理动作优先于实时控制输出。
 
+> **本固件：** 合并规则仅作用于 Motion `0x100`。`START_ENCODER_CALIBRATION` 结束后会清空 RX FIFO 并丢弃本次已解析的 Motion，避免校准期间积压的运控在结束后突然执行。
+
 ## 19.2 非实时命令处理规则
 
 以下命令不能合并为最新一帧，驱动器必须按接收顺序逐帧处理并给出对应应答：
@@ -1167,6 +1274,8 @@ Result：
 - 切换实时控制模式时，停止发送旧模式帧并清空上位机的旧实时帧发送队列，然后按照 `DISABLE → SET_CONTROL_MODE → ENABLE` 的顺序操作。收到各步骤 ACK 后，再开始周期发送新模式的实时控制帧。
 - 通信停止不会自动清零控制输出或进入 Fault，因此上位机正常停止控制时必须发送 DISABLE，并监控反馈超时作为通信异常提示。
 - 多电机系统应错开各电机请求的发送相位，避免所有电机在同一时刻集中发送命令和反馈。
+
+> **本固件：** 无 `DISABLE`。停止周期 Motion 后电机仍保持最后一帧目标。模式切换无需 `DISABLE → SET_CONTROL_MODE → ENABLE`，直接 `SET_CONTROL_MODE(MOTION)`（其它模式会被拒绝）。校准前应先停止 Motion 循环。
 
 ### 非实时请求
 
@@ -1221,6 +1330,8 @@ Encoder Calibration Report
 Motor → Master
 ```
 
+> **本固件：** `0x380` 仅作为 `GET_STATUS` 的 Status Response，不主动发送 Fault Event。
+
 ## 推荐通信流程
 
 ```text
@@ -1260,3 +1371,26 @@ READY
  ▼
 RUNNING
 ```
+
+> **本固件实际上电流程（不要按上方原文发 ENABLE/DISABLE）：**
+>
+> ```text
+> 上电（CAN 已启动）
+>  │
+>  ├─ 有有效 NV ──► 加载参数 ──► RUNNING（无 0x3C0）
+>  │
+>  └─ 无 NV ──► 与 START_CALI 同一套校准
+>        │◄──── 0x3C0 Sequence=0 进度
+>        ├─ SUCCESS ──► 写 Flash ──► RUNNING
+>        └─ FAILED  ──► FAULT（CALIBRATION_FAULT）
+>              ├──── CLEAR_FAULT ─────────► ACK
+>              └──── START_CALI ──────────► ACK(CALIBRATING) + 0x3C0
+>                    SUCCESS ──► RUNNING
+>  │
+>  ├──── SET_GAINS(MOTION) ────► ACK
+>  ├──── Motion Command ───────► Motion Feedback
+>  ▼
+> RUNNING
+> ```
+>
+> 速度/位置模式不可用。校准前先停止 Motion 循环。

@@ -70,21 +70,15 @@ PWM 20 kHz 中心对齐；TIM6 4 kHz 运控；无电流采样。
 
 首次成功校准后写入 Flash 最后一页（`0x0801F800`，2 KB）。之后上电若记录有效（magic / CRC / 极对数范围合法）则直接加载，电机不再转一圈。
 
-`flash.ps1` 整片擦除会清掉校准，烧录后第一次上电仍会走完整校准。要重校准：再烧录一次。
+`flash.ps1` 整片擦除会清掉校准，烧录后第一次上电仍会走完整校准。运行中可用 CAN `START_ENCODER_CALIBRATION` 重校准并覆盖 Flash。
 
-无有效记录时自动：
-
-1. D 轴电压锁定
-2. 电角度正转若干圈，展开机械角，估计编码器方向和极对数
-3. 由锁定位置计算电角度零偏
-4. 施加小 `+Vq`，估计闭环方向
-5. 关 PWM 输出、停 TIM1/TIM6/CAN 中断后写入 Flash（保留 SysTick）
+无有效记录时走与 CAN `START_ENCODER_CALIBRATION` **同一套** `Cali_RunCommand`：锁定、转圈估极对数/方向、探闭环方向、写 Flash，并按约 50 ms 发 `0x3C0` 进度（上电 Sequence=0）。有有效记录则只加载，不上报校准进度。
 
 失败：LED 快闪，PWM 关闭。成功：LED 常亮，进入运控。位置坐标用编码器单圈机械角（不对零）；目标位置设为当时的实际位置，避免上电窜动。MT6701 是单圈，掉电后不保留多圈计数。
 
 `CFG_POLE_PAIRS` 只是校准前的初值；真正使用的极对数以本次测量（或 Flash 记录）为准。锁不住或转角不够会报 `cali: pp bad`。
 
-校准电压/时长也在 `config.h`：过大发热，过小可能锁不住或判失败。拆过电机或编码器后必须重校准（烧录擦除），否则会沿用旧零偏。
+校准电压/时长也在 `config.h`：过大发热，过小可能锁不住或判失败。拆过电机或编码器后必须重校准，否则会沿用旧零偏。
 
 ## 运控
 
@@ -111,12 +105,12 @@ Motor CAN Protocol V1.0，Classic CAN 1 Mbps，**小端**，Motor ID = 1~63（�
 |------|------|------|
 | `0x100+ID` | 主机→电机 | Motion Command（已接入） |
 | `0x180+ID` | 主机→电机 | Control Gains，仅 `MOTION_MODE`（已接入） |
-| `0x200+ID` | 主机→电机 | Management：SET_ZERO / GET_STATUS / SET_CONTROL_MODE(motion) |
+| `0x200+ID` | 主机→电机 | Management：SET_ZERO / CLEAR_FAULT / START_CALI / GET_STATUS / SET_CONTROL_MODE(motion) |
 | `0x140+ID` / `0x1C0+ID` | 主机→电机 | 速度/位置模式：收包但不执行 |
 | `0x280+ID` | 电机→主机 | Command ACK |
 | `0x300+ID` | 电机→主机 | Motion Feedback |
 | `0x380+ID` | 电机→主机 | Status Response（母线电压/温度填 0） |
-| `0x3C0+ID` | 电机→主机 | 校准上报：未实现 |
+| `0x3C0+ID` | 电机→主机 | Encoder Calibration Report（约 50 ms） |
 
 Motion `0x100+ID`：
 
@@ -127,6 +121,8 @@ Motion `0x100+ID`：
 | 6-7 | Voltage FF | `uint16`，`raw/65535` → 0~1 |
 
 Gains `0x180+ID`：Byte0=`0x00`（MOTION），Byte1=Sequence，Byte2-3=Kp（`0.01 pu/rad`），Byte4-5=Ki 必须为 0，Byte6-7=Kd（`0.001 pu·s/rad`）。应答 `0x280`，Command=`0x20`。
+
+`START_ENCODER_CALIBRATION`（`0x200+ID`，Byte0=`0x05`）：因本固件无 ENABLE/DISABLE，**RUNNING 下可直接启动**（协议原文要求 DISABLED）。先 ACK `OK` 且 State=`CALIBRATING`，随后 `0x3C0+ID` 约 50 ms 上报进度。成功后回到 **RUNNING**（协议原文是 DISABLED）。失败进入 FAULT + `CALIBRATION_FAULT`，需 `CLEAR_FAULT` 后再发校准。上电无 NV 时同样走这条流程并上报，Sequence=0，没有 Command ACK。校准过程阻塞主循环数秒，期间 Motion 会被丢弃。
 
 反馈 `0x300+ID`：
 
@@ -150,7 +146,7 @@ pip install -r requirements.txt
 python servo_gui.py
 ```
 
-GUI 可发送协议内全部命令。Motion 支持单次或按设定频率循环发送，并刷新位置/速度/电压反馈。当前固件已接入运控、MOTION Gains、SET_ZERO、GET_STATUS；速度/位置模式、ENABLE/DISABLE、CAN 校准仍会失败或被忽略。
+GUI 可发送协议内全部命令。Motion 支持单次或按设定频率循环发送，并刷新位置/速度/电压反馈。当前固件已接入运控、MOTION Gains、SET_ZERO、GET_STATUS、START_CALI；速度/位置模式与 ENABLE/DISABLE 仍会失败或被忽略。校准前请先停止 Motion 循环。
 
 Windows 激活 venv 后请用 `python`，不要用 `python3`：系统里的 `python3` 往往是 Microsoft Store 占位程序，会立刻退出且不报错。
 

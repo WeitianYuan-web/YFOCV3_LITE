@@ -59,6 +59,7 @@ extern "C" {
 #define CFG_CALI_PROBE_VQ           (0.12f)
 #define CFG_CALI_PROBE_MS           (400U)
 #define CFG_CALI_MIN_VEL            (0.3f)
+#define CFG_CALI_REPORT_MS          (50U)
 
 #define CFG_DEBUG_PERIOD_MS         (200U)
 
