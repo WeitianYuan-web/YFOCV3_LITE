@@ -68,27 +68,34 @@ PWM 20 kHz 中心对齐；TIM6 4 kHz 运控；无电流采样。
 
 ## 上电校准
 
-启动后自动：
+首次成功校准后写入 Flash 最后一页（`0x0801F800`，2 KB）。之后上电若记录有效（magic / CRC / 极对数范围合法）则直接加载，电机不再转一圈。
+
+`flash.ps1` 整片擦除会清掉校准，烧录后第一次上电仍会走完整校准。要重校准：再烧录一次。
+
+无有效记录时自动：
 
 1. D 轴电压锁定
-2. 电角度正转，估计编码器方向
+2. 电角度正转若干圈，展开机械角，估计编码器方向和极对数
 3. 由锁定位置计算电角度零偏
 4. 施加小 `+Vq`，估计闭环方向
+5. 关 PWM 输出、停 TIM1/TIM6/CAN 中断后写入 Flash（保留 SysTick）
 
-失败：LED 快闪，PWM 关闭。成功：LED 常亮，进入运控。当前位置定义为位置 0。
+失败：LED 快闪，PWM 关闭。成功：LED 常亮，进入运控。位置坐标用编码器单圈机械角（不对零）；目标位置设为当时的实际位置，避免上电窜动。MT6701 是单圈，掉电后不保留多圈计数。
 
-默认极对数 `CFG_POLE_PAIRS=10`，在 `App/config.h` 修改。
+`CFG_POLE_PAIRS` 只是校准前的初值；真正使用的极对数以本次测量（或 Flash 记录）为准。锁不住或转角不够会报 `cali: pp bad`。
 
-校准电压/时长也在 `config.h`：过大发热，过小可能锁不住或判失败。
+校准电压/时长也在 `config.h`：过大发热，过小可能锁不住或判失败。拆过电机或编码器后必须重校准（烧录擦除），否则会沿用旧零偏。
 
 ## 运控
 
 4 kHz：
 
 ```text
-t_ref = Kd*(v_set - v_act) + Kp*(p_set - p_act)    # t_ff = 0
+t_ref = Kd*(v_set - v_act) + Kp*wrap_pi(p_set - p_act)
 t_ref = clamp(t_ref, -V_LIMIT, +V_LIMIT)
 ```
+
+`CFG_V_LIMIT=0.5` 是标幺幅值（1.0 = PWM 满幅），不是伏特。线电压大约 `0.5 × Vbus`。20 kHz 对 Vd/Vq 再限变化率 `CFG_V_SLEW_PU_S`（默认 40 pu/s，0→0.5 约 12.5 ms）。
 
 20 kHz：`q = closed_loop_dir * t_ref`，`d = 0`，逆 Park + SVPWM。
 
@@ -115,33 +122,37 @@ t_ref = clamp(t_ref, -V_LIMIT, +V_LIMIT)
 
 | 字节 | 含义 | 范围 |
 |------|------|------|
-| 0-1 | 当前角度 | -π ~ π |
+| 0-1 | 当前角度 | -4π ~ 4π（与指令同一映射，不再折到 ±π） |
 | 2-3 | 当前角速度 | -100 ~ 100 rad/s |
 | 4-5 | t_ref（电压） | -1 ~ 1 |
 | 6-7 | 圈数 | 0 ~ 65535（uint16 回绕） |
 
 ## 上位机
 
-先建虚拟环境再装依赖。
+先进入 `host/` 再建虚拟环境。Windows 用 PEAK PCAN（需先装 [PCAN-Basic](https://www.peak-system.com/PCAN-Basic.239.0.html)），Linux 用 SocketCAN。
 
 Windows（PowerShell）：
 
 ```powershell
-python -m venv host\.venv
-.\host\.venv\Scripts\Activate.ps1
-pip install -r host/requirements.txt
-python host\servo_host.py --channel can0 --id 1 --pos 0 --vel 0 --kp 20 --kd 0.5
-python host\servo_host.py --channel can0 --id 1 --listen
+cd host
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python servo_host.py --interface pcan --channel PCAN_USBBUS1 --id 1 --pos 3 --vel 0 --kp 0.2 --kd 0
+python servo_host.py --interface pcan --channel PCAN_USBBUS1 --id 1 --listen
 ```
+
+第二块 USB 适配器一般是 `PCAN_USBBUS2`。
 
 Linux / macOS：
 
 ```bash
-python3 -m venv host/.venv
-source host/.venv/bin/activate
-pip install -r host/requirements.txt
-python3 host/servo_host.py --channel can0 --id 1 --pos 0 --vel 0 --kp 20 --kd 0.5
-python3 host/servo_host.py --channel can0 --id 1 --listen
+cd host
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python3 servo_host.py --interface socketcan --channel can0 --id 1 --pos 0 --vel 10 --kp 0 --kd 0.01
+python3 servo_host.py --interface socketcan --channel can0 --id 1 --listen
 ```
 
 SocketCAN 示例：
@@ -154,7 +165,7 @@ slcan：`--interface slcan --channel /dev/ttyACM0`。
 
 ## 调试
 
-SEGGER RTT（SWD）。LC-ESC 的 PB3 是按键，不能用 SWO。主循环约 200 ms 打印一次 `p/v/t/kp/kd`（整数毫弧度等）。
+SEGGER RTT（SWD）。LC-ESC 的 PB3 是按键，不要用 SWO。主循环约 200 ms 打印一次 `p/v/t/kp/kd`（整数毫弧度等）。
 
 ## 注意
 

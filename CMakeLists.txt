@@ -66,6 +66,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/main.c
     App/servo.c
     App/cali.c
+    App/cali_nv.c
     App/comm.c
 )
 

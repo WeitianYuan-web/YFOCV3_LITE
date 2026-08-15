@@ -16,6 +16,8 @@ typedef struct
 void Can_Init(uint8_t node_id);
 void Can_ProcessRxIrq(void);
 void Can_Service(void);
+void Can_StopForFlash(void);
+void Can_Restart(void);
 uint8_t Can_PopRx(CanFrame_t *frame);
 uint8_t Can_Send(uint32_t id, const uint8_t data[8]);
 

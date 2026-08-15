@@ -24,6 +24,23 @@ static volatile float s_ol_elec;
 
 static volatile float s_volt_d;
 static volatile float s_volt_q;
+static float s_d_out;
+static float s_q_out;
+
+static float Servo_Slew(float current, float target, float max_step)
+{
+  const float delta = target - current;
+
+  if (delta > max_step)
+  {
+    return current + max_step;
+  }
+  if (delta < -max_step)
+  {
+    return current - max_step;
+  }
+  return target;
+}
 
 static void Servo_ApplyDq(float d_v, float q_v, float elec)
 {
@@ -32,10 +49,15 @@ static void Servo_ApplyDq(float d_v, float q_v, float elec)
   float duty_a;
   float duty_b;
   float duty_c;
+  const float max_step = CFG_V_SLEW_PU_S * CFG_PWM_DT_S;
 
   dq.d = d_v;
   dq.q = q_v;
   Foc_LimitDQ(CFG_V_LIMIT, &dq.d, &dq.q);
+  s_d_out = Servo_Slew(s_d_out, dq.d, max_step);
+  s_q_out = Servo_Slew(s_q_out, dq.q, max_step);
+  dq.d = s_d_out;
+  dq.q = s_q_out;
   ab = Foc_InversePark(dq, elec);
   Foc_SvpwmOffsetOptimized(ab.alpha, ab.beta, &duty_a, &duty_b, &duty_c);
   Pwm_ApplyDuty(duty_a, duty_b, duty_c);
@@ -43,13 +65,14 @@ static void Servo_ApplyDq(float d_v, float q_v, float elec)
 
 void Servo_Init(void)
 {
-  const float tau = 1.0f / (2.0f * FOC_PI * CFG_VEL_LPF_HZ);
+  const float wn = 2.0f * FOC_PI * CFG_VEL_PLL_HZ;
   Foc_EncoderConfig_t cfg;
 
   cfg.pole_pairs = (uint8_t)CFG_POLE_PAIRS;
   cfg.direction = 1;
   cfg.electrical_offset_rad = 0.0f;
-  cfg.lpf_alpha = CFG_PWM_DT_S / (tau + CFG_PWM_DT_S);
+  cfg.pll_kp = 2.0f * CFG_VEL_PLL_ZETA * wn;
+  cfg.pll_ki = wn * wn;
 
   Foc_EncoderInit(&s_enc, &cfg);
   s_mode = SERVO_IDLE;
@@ -59,6 +82,8 @@ void Servo_Init(void)
   s_kp = 0.0f;
   s_kd = 0.0f;
   s_t_ref = 0.0f;
+  s_d_out = 0.0f;
+  s_q_out = 0.0f;
 }
 
 void Servo_OnPwmIsr(void)
@@ -70,6 +95,10 @@ void Servo_OnPwmIsr(void)
   {
     const float mech = ((float)raw * FOC_TWO_PI) / (float)ENCODER_CPR;
     (void)Foc_EncoderUpdate(&s_enc, mech, CFG_PWM_DT_S);
+  }
+  else
+  {
+    Foc_EncoderPredict(&s_enc, CFG_PWM_DT_S);
   }
 
   if (mode == SERVO_OPENLOOP)
@@ -101,7 +130,8 @@ void Servo_OnCtrlIsr(void)
 
   p_act = Foc_EncoderGetPosition(&s_enc);
   v_act = Foc_EncoderGetVelocity(&s_enc);
-  t_ref = (s_kd * (s_v_set - v_act)) + (s_kp * (s_p_set - p_act));
+  /* Single-turn encoder: shortest-path error. 0 and 2π are the same angle. */
+  t_ref = (s_kd * (s_v_set - v_act)) + (s_kp * Foc_WrapAngleToPi(s_p_set - p_act));
   s_t_ref = Foc_Clamp(t_ref, -CFG_V_LIMIT, CFG_V_LIMIT);
 }
 
@@ -149,12 +179,9 @@ void Servo_SetEncoderAlignment(int8_t encoder_dir, float electrical_offset_rad)
   Foc_EncoderSetAlignment(&s_enc, encoder_dir, electrical_offset_rad);
 }
 
-void Servo_ZeroPosition(void)
+void Servo_SetPolePairs(uint8_t pole_pairs)
 {
-  Foc_EncoderSetZero(&s_enc);
-  s_p_set = 0.0f;
-  s_v_set = 0.0f;
-  s_t_ref = 0.0f;
+  Foc_EncoderSetPolePairs(&s_enc, pole_pairs);
 }
 
 void Servo_HoldPosition(void)

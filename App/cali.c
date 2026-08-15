@@ -1,31 +1,25 @@
 #include "cali.h"
 
+#include "cali_nv.h"
+#include "can.h"
 #include "config.h"
 #include "debug.h"
 #include "encoder.h"
+#include "foc_encoder.h"
 #include "foc_math.h"
 #include "pwm.h"
 #include "servo.h"
 #include "stm32g4xx_hal.h"
 
-static uint8_t Cali_ReadRawMech(float *out, uint16_t *raw_out, uint8_t *status_out)
+static uint8_t Cali_ReadRawMech(float *out)
 {
   uint16_t raw;
-  uint8_t status = 0U;
 
-  if (Encoder_ReadFrame(&raw, &status) == 0U)
+  if (Encoder_ReadFrame(&raw, 0) == 0U)
   {
     return 0U;
   }
   *out = ((float)raw * FOC_TWO_PI) / (float)ENCODER_CPR;
-  if (raw_out != 0)
-  {
-    *raw_out = raw;
-  }
-  if (status_out != 0)
-  {
-    *status_out = status;
-  }
   return 1U;
 }
 
@@ -36,49 +30,96 @@ static void Cali_Fail(const char *why)
   Servo_SetMode(SERVO_FAULT);
 }
 
-uint8_t Cali_Run(void)
+static float Cali_Absf(float x)
+{
+  return (x < 0.0f) ? -x : x;
+}
+
+static uint8_t Cali_RotateMeasure(float *delta_mech_out)
+{
+  float theta;
+  float last;
+  float acc = 0.0f;
+  uint32_t t0;
+
+  if (Cali_ReadRawMech(&last) == 0U)
+  {
+    return 0U;
+  }
+
+  Servo_SetOpenloop(CFG_CALI_LOCK_V, 0.0f, CFG_CALI_ROTATE_ELEC_RAD_S, 0.0f);
+  t0 = HAL_GetTick();
+  while ((HAL_GetTick() - t0) < CFG_CALI_ROTATE_MS)
+  {
+    HAL_Delay(CFG_CALI_ROTATE_SAMPLE_MS);
+    if (Cali_ReadRawMech(&theta) == 0U)
+    {
+      return 0U;
+    }
+    acc += Foc_WrapAngleToPi(theta - last);
+    last = theta;
+  }
+
+  *delta_mech_out = acc;
+  return 1U;
+}
+
+static uint8_t Cali_EstimatePolePairs(float delta_mech, uint8_t *pp_out)
+{
+  const float elec_delta = CFG_CALI_ROTATE_ELEC_RAD_S *
+                           ((float)CFG_CALI_ROTATE_MS / 1000.0f);
+  const float abs_mech = Cali_Absf(delta_mech);
+  float pp_f;
+  uint8_t pp;
+
+  if (abs_mech < CFG_CALI_MIN_MECH_DELTA)
+  {
+    return 0U;
+  }
+
+  pp_f = elec_delta / abs_mech;
+  pp = (uint8_t)(pp_f + 0.5f);
+  if ((pp < CFG_CALI_PP_MIN) || (pp > CFG_CALI_PP_MAX))
+  {
+    return 0U;
+  }
+  if (Cali_Absf(pp_f - (float)pp) > CFG_CALI_PP_MAX_RESIDUAL)
+  {
+    return 0U;
+  }
+
+  *pp_out = pp;
+  return 1U;
+}
+
+static uint8_t Cali_Run(void)
 {
   float theta0;
-  float theta1;
   float delta;
   float aligned;
   float offset;
   float vel;
-  uint16_t raw0;
-  uint16_t raw1;
-  uint8_t st0;
-  uint8_t st1;
+  uint8_t pole_pairs = (uint8_t)CFG_POLE_PAIRS;
   int8_t encoder_dir = 1;
   int8_t closed_loop_dir = 1;
 
-  Dbg_Printf("cali: lock\r\n");
   Pwm_EnableOutputs();
   Servo_SetOpenloop(CFG_CALI_LOCK_V, 0.0f, 0.0f, 0.0f);
   HAL_Delay(CFG_CALI_LOCK_MS);
-  if (Cali_ReadRawMech(&theta0, &raw0, &st0) == 0U)
-  {
-    Cali_Fail("cali: enc fail");
-    return 0U;
-  }
-  Dbg_Printf("cali: lock raw=%d st=%d\r\n", (int)raw0, (int)st0);
-
-  Dbg_Printf("cali: rotate\r\n");
-  Servo_SetOpenloop(CFG_CALI_LOCK_V, 0.0f, CFG_CALI_ROTATE_ELEC_RAD_S, 0.0f);
-  HAL_Delay(CFG_CALI_ROTATE_MS);
-  if (Cali_ReadRawMech(&theta1, &raw1, &st1) == 0U)
+  if (Cali_ReadRawMech(&theta0) == 0U)
   {
     Cali_Fail("cali: enc fail");
     return 0U;
   }
 
-  delta = Foc_WrapAngleToPi(theta1 - theta0);
+  if (Cali_RotateMeasure(&delta) == 0U)
+  {
+    Cali_Fail("cali: enc fail");
+    return 0U;
+  }
+
   Servo_SetOpenloop(CFG_CALI_LOCK_V, 0.0f, 0.0f, 0.0f);
   HAL_Delay(80U);
-
-  Dbg_Printf("cali: rot d_mrad=%d raw=%d st=%d\r\n",
-             (int)(delta * 1000.0f),
-             (int)raw1,
-             (int)st1);
 
   if ((delta > -CFG_CALI_MIN_MECH_DELTA) && (delta < CFG_CALI_MIN_MECH_DELTA))
   {
@@ -91,24 +132,25 @@ uint8_t Cali_Run(void)
     encoder_dir = -1;
   }
 
+  if (Cali_EstimatePolePairs(delta, &pole_pairs) == 0U)
+  {
+    Cali_Fail("cali: pp bad");
+    return 0U;
+  }
+
   Servo_SetOpenloop(CFG_CALI_LOCK_V, 0.0f, 0.0f, 0.0f);
   HAL_Delay(CFG_CALI_LOCK_MS);
-  if (Cali_ReadRawMech(&theta0, &raw0, &st0) == 0U)
+  if (Cali_ReadRawMech(&theta0) == 0U)
   {
     Cali_Fail("cali: enc fail");
     return 0U;
   }
 
   aligned = Foc_ApplyEncoderDirToMechTheta(theta0, encoder_dir);
-  offset = Foc_WrapAngle0To2Pi(-((float)CFG_POLE_PAIRS * aligned));
+  offset = Foc_WrapAngle0To2Pi(-((float)pole_pairs * aligned));
+  Servo_SetPolePairs(pole_pairs);
   Servo_SetEncoderAlignment(encoder_dir, offset);
   Foc_EncoderReset(Servo_GetEncoder(), theta0);
-
-  Dbg_Printf("cali: probe enc_dir=%d off_mrad=%d raw=%d st=%d\r\n",
-             (int)encoder_dir,
-             (int)(offset * 1000.0f),
-             (int)raw0,
-             (int)st0);
 
   Servo_SetClosedLoopDir(1);
   Servo_SetVoltageCmd(0.0f, CFG_CALI_PROBE_VQ);
@@ -116,8 +158,6 @@ uint8_t Cali_Run(void)
   vel = Foc_EncoderGetVelocity(Servo_GetEncoder());
   Servo_SetVoltageCmd(0.0f, 0.0f);
   HAL_Delay(80U);
-
-  Dbg_Printf("cali: probe vel_mrad_s=%d\r\n", (int)(vel * 1000.0f));
 
   if ((vel > -CFG_CALI_MIN_VEL) && (vel < CFG_CALI_MIN_VEL))
   {
@@ -130,13 +170,103 @@ uint8_t Cali_Run(void)
     closed_loop_dir = -1;
   }
   Servo_SetClosedLoopDir(closed_loop_dir);
-  Servo_ZeroPosition();
   Servo_HoldPosition();
   Servo_SetMode(SERVO_RUN);
   CtrlTimer_Start();
 
-  Dbg_Printf("cali: ok enc_dir=%d cl_dir=%d\r\n",
+  Dbg_Printf("cali: ok pp=%d enc_dir=%d cl_dir=%d\r\n",
+             (int)pole_pairs,
              (int)encoder_dir,
              (int)closed_loop_dir);
+  return 1U;
+}
+
+static uint8_t Cali_ApplySaved(const CaliNvData_t *nv)
+{
+  Foc_Encoder_t *enc = Servo_GetEncoder();
+  uint32_t t0;
+  float raw_mech;
+
+  Servo_SetPolePairs(nv->pole_pairs);
+  Servo_SetEncoderAlignment(nv->encoder_dir, nv->electrical_offset_rad);
+  Servo_SetClosedLoopDir(nv->closed_loop_dir);
+
+  t0 = HAL_GetTick();
+  while ((Foc_EncoderIsReady(enc) == 0U) && ((HAL_GetTick() - t0) < 50U))
+  {
+    HAL_Delay(1U);
+  }
+  if (Foc_EncoderIsReady(enc) == 0U)
+  {
+    Cali_Fail("cali: enc fail");
+    return 0U;
+  }
+
+  raw_mech = Foc_EncoderGetLastRaw(enc);
+  Foc_EncoderReset(enc, raw_mech);
+  Pwm_EnableOutputs();
+  Servo_HoldPosition();
+  Servo_SetMode(SERVO_RUN);
+  CtrlTimer_Start();
+
+  Dbg_Printf("cali: load pp=%d\r\n", (int)nv->pole_pairs);
+  return 1U;
+}
+
+static void Cali_ResumeRun(void)
+{
+  Can_Restart();
+  Encoder_Init();
+  CtrlTimer_Start();
+  Pwm_EnableOutputs();
+  Servo_HoldPosition();
+  Servo_SetMode(SERVO_RUN);
+}
+
+static void Cali_SaveCurrent(void)
+{
+  CaliNvData_t nv;
+  ServoTelemetry_t tel;
+  const Foc_Encoder_t *enc = Servo_GetEncoder();
+
+  Servo_GetTelemetry(&tel);
+  nv.pole_pairs = enc->pole_pairs;
+  nv.encoder_dir = enc->direction;
+  nv.closed_loop_dir = tel.closed_loop_dir;
+  nv.electrical_offset_rad = enc->electrical_offset_rad;
+
+  Servo_SetMode(SERVO_IDLE);
+  Pwm_ApplyDuty(FOC_PWM_NEUTRAL_DUTY, FOC_PWM_NEUTRAL_DUTY, FOC_PWM_NEUTRAL_DUTY);
+  Pwm_DisableOutputs();
+  Can_StopForFlash();
+
+  if (CaliNv_Save(&nv) == 0U)
+  {
+    Dbg_Printf("cali: save fail\r\n");
+    Cali_ResumeRun();
+    return;
+  }
+
+  Cali_ResumeRun();
+  Dbg_Printf("cali: saved pp=%d\r\n", (int)nv.pole_pairs);
+}
+
+uint8_t Cali_Start(void)
+{
+  CaliNvData_t nv;
+
+  if (CaliNv_Load(&nv) != 0U)
+  {
+    return Cali_ApplySaved(&nv);
+  }
+
+  Dbg_Printf("cali: no nv, run\r\n");
+  Can_StopForFlash();
+  if (Cali_Run() == 0U)
+  {
+    Can_Restart();
+    return 0U;
+  }
+  Cali_SaveCurrent();
   return 1U;
 }

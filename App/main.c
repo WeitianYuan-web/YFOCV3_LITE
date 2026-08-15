@@ -23,20 +23,19 @@ int main(void)
 
   Dbg_Printf("YFOCV3 LC-ESC voltage servo\r\n");
   Board_LedSet(1U);
-  cali_ok = Cali_Run();
+  cali_ok = Cali_Start();
   if (cali_ok == 0U)
   {
-    Dbg_Printf("cali failed, halt\r\n");
-    for (;;)
-    {
-      Board_LedToggle();
-      HAL_Delay(80U);
-    }
+    Dbg_Printf("cali failed\r\n");
+  }
+  else
+  {
+    CtrlTimer_Start();
+    Servo_HoldPosition();
+    Dbg_Printf("run\r\n");
   }
 
-  Board_LedSet(1U);
-  Servo_HoldPosition();
-  Dbg_Printf("run\r\n");
+  Board_LedSet(cali_ok);
 
   for (;;)
   {
@@ -62,6 +61,10 @@ int main(void)
                  (int)(tel.t_ref * 1000.0f),
                  (int)(tel.kp * 10.0f),
                  (int)(tel.kd * 1000.0f));
+      if (cali_ok == 0U)
+      {
+        Board_LedToggle();
+      }
     }
   }
 }

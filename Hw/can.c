@@ -98,24 +98,55 @@ void HAL_FDCAN_ErrorStatusCallback(FDCAN_HandleTypeDef *hfdcan, uint32_t ErrorSt
   }
 }
 
+void Can_StopForFlash(void)
+{
+  NVIC_DisableIRQ(FDCAN1_IT0_IRQn);
+  if (hfdcan1.State == HAL_FDCAN_STATE_BUSY)
+  {
+    (void)HAL_FDCAN_Stop(&hfdcan1);
+  }
+  SET_BIT(hfdcan1.Instance->CCCR, FDCAN_CCCR_INIT);
+  hfdcan1.State = HAL_FDCAN_STATE_READY;
+  hfdcan1.ErrorCode = HAL_FDCAN_ERROR_NONE;
+}
+
+void Can_Restart(void)
+{
+  FDCAN_RxHeaderTypeDef rx_header;
+  uint8_t rx_data[8];
+
+  s_rx_head = 0U;
+  s_rx_tail = 0U;
+  s_bus_off_pending = 0U;
+  hfdcan1.ErrorCode = HAL_FDCAN_ERROR_NONE;
+  SET_BIT(hfdcan1.Instance->CCCR, FDCAN_CCCR_INIT);
+  hfdcan1.State = HAL_FDCAN_STATE_READY;
+
+  if (HAL_FDCAN_Start(&hfdcan1) != HAL_OK)
+  {
+    return;
+  }
+
+  while (HAL_FDCAN_GetRxMessage(&hfdcan1, FDCAN_RX_FIFO0, &rx_header, rx_data) == HAL_OK)
+  {
+  }
+
+  HAL_NVIC_SetPriority(FDCAN1_IT0_IRQn, CFG_NVIC_CAN, 0U);
+  HAL_NVIC_EnableIRQ(FDCAN1_IT0_IRQn);
+  (void)HAL_FDCAN_ActivateNotification(
+      &hfdcan1,
+      (uint32_t)(FDCAN_IT_RX_FIFO0_NEW_MESSAGE | FDCAN_IT_BUS_OFF),
+      0U);
+}
+
 void Can_Service(void)
 {
   if ((s_bus_off_pending == 0U) && ((hfdcan1.Instance->PSR & FDCAN_PSR_BO) == 0U))
   {
     return;
   }
-
-  s_bus_off_pending = 0U;
-  (void)HAL_FDCAN_AbortTxRequest(&hfdcan1,
-                                 (uint32_t)(FDCAN_TX_BUFFER0 | FDCAN_TX_BUFFER1 | FDCAN_TX_BUFFER2));
-  (void)HAL_FDCAN_Stop(&hfdcan1);
-  hfdcan1.ErrorCode = HAL_FDCAN_ERROR_NONE;
-  hfdcan1.State = HAL_FDCAN_STATE_READY;
-  (void)HAL_FDCAN_Start(&hfdcan1);
-  (void)HAL_FDCAN_ActivateNotification(
-      &hfdcan1,
-      (uint32_t)(FDCAN_IT_RX_FIFO0_NEW_MESSAGE | FDCAN_IT_BUS_OFF),
-      0U);
+  Can_StopForFlash();
+  Can_Restart();
 }
 
 uint8_t Can_PopRx(CanFrame_t *frame)

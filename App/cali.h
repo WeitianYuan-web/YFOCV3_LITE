@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-uint8_t Cali_Run(void);
+uint8_t Cali_Start(void);
 
 #ifdef __cplusplus
 }

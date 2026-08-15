@@ -19,7 +19,7 @@ POS_CMD = (-4.0 * PI, 4.0 * PI)
 VEL = (-100.0, 100.0)
 KP = (0.0, 500.0)
 KD = (0.0, 5.0)
-POS_FB = (-PI, PI)
+POS_FB = (-4.0 * PI, 4.0 * PI)
 TORQUE = (-1.0, 1.0)
 
 
@@ -57,9 +57,11 @@ def unpack_feedback(data: bytes) -> dict[str, float | int]:
 
 
 def parse_args() -> argparse.Namespace:
+    default_interface = "pcan" if sys.platform == "win32" else "socketcan"
+    default_channel = "PCAN_USBBUS1" if sys.platform == "win32" else "can0"
     parser = argparse.ArgumentParser(description="YFOCV3 voltage servo host")
-    parser.add_argument("--interface", default="socketcan", help="python-can interface")
-    parser.add_argument("--channel", default="can0", help="CAN channel / slcan device")
+    parser.add_argument("--interface", default=default_interface, help="python-can interface")
+    parser.add_argument("--channel", default=default_channel, help="CAN channel / slcan device")
     parser.add_argument("--bitrate", type=int, default=1000000)
     parser.add_argument("--id", type=int, default=1, help="device node id (nibble)")
     parser.add_argument("--pos", type=float, default=0.0, help="target angle rad")

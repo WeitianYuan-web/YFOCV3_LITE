@@ -63,7 +63,7 @@ void Comm_SendFeedback(void)
   const uint32_t fb_id = CFG_CAN_FB_BASE + CFG_NODE_ID;
 
   Servo_GetTelemetry(&tel);
-  pos_wrap = Foc_WrapAngleToPi(tel.p_act);
+  pos_wrap = Foc_Clamp(tel.p_act, CFG_POS_FB_MIN, CFG_POS_FB_MAX);
   turns_f = tel.p_act / FOC_TWO_PI;
   if (turns_f < 0.0f)
   {
