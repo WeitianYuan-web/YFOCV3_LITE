@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""YFOCV3 GUI host for Motor CAN Protocol V1.0."""
+"""YFOCV3 host GUI: Motor CAN Protocol V1.0 + pyqtgraph scope."""
 
 from __future__ import annotations
 
@@ -7,8 +7,6 @@ import queue
 import sys
 import threading
 import time
-import tkinter as tk
-from tkinter import ttk, messagebox
 
 try:
     import can
@@ -16,263 +14,385 @@ except ImportError:
     print("python-can is required: pip install python-can", file=sys.stderr)
     raise
 
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QFormLayout,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QSplitter,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+import can_backends
 import protocol as proto
+from can_worker import CanWorker
+from scope_view import ScopeView
+
+STYLE = """
+QMainWindow, QWidget { background: #16181d; color: #e6e8ee; font-size: 13px; }
+QLabel { color: #e6e8ee; }
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit {
+    background: #22262e; color: #e6e8ee; border: 1px solid #333844;
+    border-radius: 6px; padding: 5px 8px; selection-background-color: #2d6cdf;
+}
+QComboBox QAbstractItemView { background: #22262e; color: #e6e8ee; }
+QPushButton {
+    background: #2d6cdf; color: white; border: none; border-radius: 6px;
+    padding: 6px 14px; font-weight: 600;
+}
+QPushButton:hover { background: #3b7aee; }
+QPushButton:pressed { background: #2458b8; }
+QPushButton:checked { background: #c47b16; }
+QPushButton#ghost, QPushButton#ghost:hover {
+    background: #2a2f38; color: #d0d4dc; border: 1px solid #3a404c;
+}
+QTabWidget::pane { border: 1px solid #2c313c; border-radius: 8px; top: -1px; }
+QTabBar::tab {
+    background: #1c2028; color: #9aa3b2; padding: 8px 16px; margin-right: 2px;
+    border-top-left-radius: 8px; border-top-right-radius: 8px;
+}
+QTabBar::tab:selected { background: #2a3140; color: #ffffff; }
+QFrame#card {
+    background: #1c2028; border: 1px solid #2c313c; border-radius: 10px;
+}
+QLabel#metric { color: #8b93a3; font-size: 11px; }
+QLabel#metricVal { color: #f2f4f8; font-size: 20px; font-weight: 700; }
+QLabel#connOk { color: #69f0ae; font-weight: 600; }
+QLabel#connOff { color: #8b93a3; }
+QLabel#scopeTitle { font-size: 15px; font-weight: 700; }
+QLabel#scopeHint { color: #8b93a3; padding: 0 4px; }
+QLabel#scopeHint[warn="true"] { color: #ffcc66; }
+QLabel#scopeCursor { color: #c8cdd6; font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; }
+QFrame#vsep { color: #333844; }
+QCheckBox { color: #e6e8ee; spacing: 6px; }
+QCheckBox::indicator { width: 14px; height: 14px; border-radius: 3px; border: 1px solid #4a5160; background: #22262e; }
+QCheckBox::indicator:checked { background: #2d6cdf; border-color: #2d6cdf; }
+QMenu {
+    background: #1c2028; color: #e6e8ee; border: 1px solid #2c313c; padding: 4px;
+}
+QMenu::item { padding: 6px 18px; border-radius: 4px; }
+QMenu::item:selected { background: #2d6cdf; }
+QMenu::separator { height: 1px; background: #2c313c; margin: 4px 8px; }
+QPlainTextEdit { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; }
+QSplitter::handle { background: #2c313c; height: 6px; }
+"""
 
 
-class CanWorker(threading.Thread):
-    def __init__(self, bus: can.BusABC, node_id: int, rx_q: queue.Queue) -> None:
-        super().__init__(daemon=True)
-        self.bus = bus
-        self.ids = proto.ids(node_id)
-        self.rx_q = rx_q
-        self.tx_q: queue.Queue = queue.Queue()
-        self._stop = threading.Event()
-        self._cyclic = False
-        self._period = 0.005
-        self._cyclic_id = 0
-        self._payload_fn = lambda: proto.pack_motion(0.0, 0.0, 0.0)
-        self._lock = threading.Lock()
-
-    def set_cyclic(self, enabled: bool, rate_hz: float, can_id: int, payload_fn) -> None:
-        with self._lock:
-            self._cyclic = enabled
-            self._period = 1.0 / max(1.0, float(rate_hz))
-            self._cyclic_id = int(can_id)
-            self._payload_fn = payload_fn
-
-    def send(self, can_id: int, data: bytes) -> None:
-        self.tx_q.put((can_id, data))
-
-    def stop(self) -> None:
-        self._stop.set()
-
-    def run(self) -> None:
-        last_tx = 0.0
-        while not self._stop.is_set():
-            try:
-                while True:
-                    can_id, data = self.tx_q.get_nowait()
-                    self.bus.send(can.Message(arbitration_id=can_id, data=data, is_extended_id=False))
-            except queue.Empty:
-                pass
-            except Exception as exc:
-                self.rx_q.put(("error", str(exc)))
-
-            now = time.monotonic()
-            with self._lock:
-                cyclic = self._cyclic
-                period = self._period
-                cyclic_id = self._cyclic_id
-                payload_fn = self._payload_fn
-            if cyclic and (now - last_tx) >= period:
-                try:
-                    self.bus.send(
-                        can.Message(
-                            arbitration_id=cyclic_id,
-                            data=payload_fn(),
-                            is_extended_id=False,
-                        )
-                    )
-                    last_tx = now
-                except Exception as exc:
-                    self.rx_q.put(("error", str(exc)))
-
-            try:
-                msg = self.bus.recv(timeout=0.005)
-            except Exception as exc:
-                self.rx_q.put(("error", str(exc)))
-                continue
-            if msg is None or msg.is_extended_id or len(msg.data) != 8:
-                continue
-            aid = msg.arbitration_id
-            data = bytes(msg.data)
-            if aid == self.ids["fb"]:
-                self.rx_q.put(("fb", proto.unpack_feedback(data)))
-            elif aid == self.ids["ack"]:
-                self.rx_q.put(("ack", proto.unpack_ack(data)))
-            elif aid == self.ids["status"]:
-                self.rx_q.put(("status", proto.unpack_status(data)))
-            elif aid == self.ids["cali"]:
-                self.rx_q.put(("cali", proto.unpack_cali(data)))
-
-
-class HostGui:
-    def __init__(self, root: tk.Tk) -> None:
-        self.root = root
-        self.root.title("YFOCV3 Motor Host")
+class HostWindow(QMainWindow):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("YFOCV3 Motor Host")
+        self.resize(1280, 860)
         self.bus: can.BusABC | None = None
         self.worker: CanWorker | None = None
         self.rx_q: queue.Queue = queue.Queue()
         self.seq = 1
         self.fb_count = 0
         self.fb_t0 = time.monotonic()
+        self.fb_hz = 0.0
         self._snap = (0.0, 0.0, 0.0)
         self._vel_snap = 0.0
-        self._pos_snap = (0.0, 10.0)
+        self._pos_snap = (0.0, 100.0)
         self._snap_lock = threading.Lock()
         self._build()
-        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
-        self.root.after(30, self._poll_rx)
+        self._timer = QTimer(self)
+        self._timer.setInterval(30)
+        self._timer.timeout.connect(self._poll_rx)
+        self._timer.start()
 
     def _build(self) -> None:
-        pad = {"padx": 6, "pady": 4}
-        conn = ttk.LabelFrame(self.root, text="连接")
-        conn.pack(fill="x", **pad)
-        self.var_iface = tk.StringVar(value="pcan" if sys.platform == "win32" else "socketcan")
-        self.var_ch = tk.StringVar(value="PCAN_USBBUS1" if sys.platform == "win32" else "can0")
-        self.var_bitrate = tk.StringVar(value="1000000")
-        self.var_id = tk.StringVar(value="1")
-        self.lbl_conn = ttk.Label(conn, text="未连接", foreground="gray")
-        ttk.Label(conn, text="接口").grid(row=0, column=0, sticky="e")
-        ttk.Entry(conn, textvariable=self.var_iface, width=12).grid(row=0, column=1)
-        ttk.Label(conn, text="通道").grid(row=0, column=2, sticky="e")
-        ttk.Entry(conn, textvariable=self.var_ch, width=16).grid(row=0, column=3)
-        ttk.Label(conn, text="波特率").grid(row=0, column=4, sticky="e")
-        ttk.Entry(conn, textvariable=self.var_bitrate, width=10).grid(row=0, column=5)
-        ttk.Label(conn, text="Motor ID").grid(row=0, column=6, sticky="e")
-        ttk.Entry(conn, textvariable=self.var_id, width=6).grid(row=0, column=7)
-        ttk.Button(conn, text="连接", command=self.connect).grid(row=0, column=8, padx=4)
-        ttk.Button(conn, text="断开", command=self.disconnect).grid(row=0, column=9)
-        self.lbl_conn.grid(row=0, column=10, padx=8)
+        root = QWidget()
+        self.setCentralWidget(root)
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+        layout.addWidget(self._conn_bar())
+        layout.addWidget(self._metrics())
 
-        fb = ttk.LabelFrame(self.root, text="Motion Feedback / Status")
-        fb.pack(fill="x", **pad)
-        self.var_fb_pos = tk.StringVar(value="—")
-        self.var_fb_vel = tk.StringVar(value="—")
-        self.var_fb_t = tk.StringVar(value="—")
-        self.var_fb_hz = tk.StringVar(value="0 Hz")
-        self.var_state = tk.StringVar(value="—")
-        self.var_fault = tk.StringVar(value="—")
-        self.var_mode = tk.StringVar(value="—")
-        big = ("Segoe UI", 16, "bold")
-        ttk.Label(fb, text="位置 rad").grid(row=0, column=0)
-        ttk.Label(fb, textvariable=self.var_fb_pos, font=big).grid(row=1, column=0, padx=12)
-        ttk.Label(fb, text="速度 rad/s").grid(row=0, column=1)
-        ttk.Label(fb, textvariable=self.var_fb_vel, font=big).grid(row=1, column=1, padx=12)
-        ttk.Label(fb, text="电压 pu").grid(row=0, column=2)
-        ttk.Label(fb, textvariable=self.var_fb_t, font=big).grid(row=1, column=2, padx=12)
-        ttk.Label(fb, text="反馈频率").grid(row=0, column=3)
-        ttk.Label(fb, textvariable=self.var_fb_hz).grid(row=1, column=3, padx=12)
-        ttk.Label(fb, text="State").grid(row=0, column=4)
-        ttk.Label(fb, textvariable=self.var_state).grid(row=1, column=4, padx=8)
-        ttk.Label(fb, text="Fault").grid(row=0, column=5)
-        ttk.Label(fb, textvariable=self.var_fault).grid(row=1, column=5, padx=8)
-        ttk.Label(fb, text="Mode").grid(row=0, column=6)
-        ttk.Label(fb, textvariable=self.var_mode).grid(row=1, column=6, padx=8)
+        split = QSplitter(Qt.Orientation.Vertical)
+        split.addWidget(self._tabs())
+        scope_card = QFrame()
+        scope_card.setObjectName("card")
+        scope_lay = QVBoxLayout(scope_card)
+        scope_lay.setContentsMargins(0, 0, 0, 0)
+        self.scope = ScopeView()
+        scope_lay.addWidget(self.scope)
+        split.addWidget(scope_card)
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 3)
+        split.setSizes([280, 520])
+        layout.addWidget(split, 1)
 
-        nb = ttk.Notebook(self.root)
-        nb.pack(fill="both", expand=True, **pad)
-        self._tab_motion(nb)
-        self._tab_vel(nb)
-        self._tab_pos(nb)
-        self._tab_gains(nb)
-        self._tab_mgmt(nb)
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setMaximumHeight(140)
+        layout.addWidget(self.log)
 
-        logf = ttk.LabelFrame(self.root, text="日志")
-        logf.pack(fill="both", expand=True, **pad)
-        self.log = tk.Text(logf, height=10, wrap="word")
-        scroll = ttk.Scrollbar(logf, command=self.log.yview)
-        self.log.configure(yscrollcommand=scroll.set)
-        self.log.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+    def _combo(self, items: list[str], width: int, editable: bool = True) -> QComboBox:
+        box = QComboBox()
+        box.setEditable(editable)
+        box.addItems(items)
+        box.setMinimumWidth(width)
+        box.setMaximumWidth(width + 40)
+        if editable and box.lineEdit() is not None:
+            box.lineEdit().setPlaceholderText("可手填")
+        return box
 
-    def _entry_row(self, parent, row: int, label: str, var: tk.StringVar, width: int = 12) -> None:
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="e", padx=4, pady=3)
-        ttk.Entry(parent, textvariable=var, width=width).grid(row=row, column=1, sticky="w", padx=4, pady=3)
+    def _conn_bar(self) -> QFrame:
+        bar = QFrame()
+        bar.setObjectName("card")
+        row = QHBoxLayout(bar)
+        default_iface = can_backends.default_interface()
+        self.cmb_iface = self._combo(list(can_backends.INTERFACES), 110)
+        if self.cmb_iface.findText(default_iface) < 0:
+            self.cmb_iface.insertItem(0, default_iface)
+        self.cmb_iface.setCurrentText(default_iface)
+        self.cmb_ch = self._combo(can_backends.list_channels(default_iface), 170)
+        self.cmb_ch.setCurrentText(can_backends.default_channel(default_iface))
+        self.cmb_bitrate = self._combo([str(b) for b in can_backends.BITRATES], 100)
+        self.cmb_bitrate.setCurrentText("1000000")
+        self.ed_id = QLineEdit("1")
+        self.ed_id.setMaximumWidth(48)
+        self.cmb_iface.activated.connect(self._on_iface_changed)
+        row.addWidget(QLabel("接口"))
+        row.addWidget(self.cmb_iface)
+        row.addWidget(QLabel("通道"))
+        row.addWidget(self.cmb_ch)
+        btn_scan = QPushButton("扫描")
+        btn_scan.setObjectName("ghost")
+        btn_scan.clicked.connect(self._scan_channels)
+        row.addWidget(btn_scan)
+        row.addWidget(QLabel("波特率"))
+        row.addWidget(self.cmb_bitrate)
+        row.addWidget(QLabel("ID"))
+        row.addWidget(self.ed_id)
+        btn_on = QPushButton("连接")
+        btn_off = QPushButton("断开")
+        btn_off.setObjectName("ghost")
+        btn_on.clicked.connect(self.connect_bus)
+        btn_off.clicked.connect(self.disconnect_bus)
+        row.addWidget(btn_on)
+        row.addWidget(btn_off)
+        self.lbl_conn = QLabel("未连接")
+        self.lbl_conn.setObjectName("connOff")
+        row.addWidget(self.lbl_conn)
+        row.addStretch(1)
+        return bar
 
-    def _tab_motion(self, nb: ttk.Notebook) -> None:
-        tab = ttk.Frame(nb)
-        nb.add(tab, text="Motion")
-        self.var_m_pos = tk.StringVar(value="0.0")
-        self.var_m_vel = tk.StringVar(value="0.0")
-        self.var_m_ff = tk.StringVar(value="0.0")
-        self.var_m_rate = tk.StringVar(value="200")
-        self._entry_row(tab, 0, "位置 rad", self.var_m_pos)
-        self._entry_row(tab, 1, "速度 rad/s", self.var_m_vel)
-        self._entry_row(tab, 2, "Voltage FF 0~1", self.var_m_ff)
-        self._entry_row(tab, 3, "循环频率 Hz", self.var_m_rate)
-        btns = ttk.Frame(tab)
-        btns.grid(row=4, column=0, columnspan=3, pady=8, sticky="w")
-        ttk.Button(btns, text="发送一次", command=self.send_motion_once).pack(side="left", padx=4)
-        ttk.Button(btns, text="开始循环", command=self.start_cyclic).pack(side="left", padx=4)
-        ttk.Button(btns, text="停止循环", command=self.stop_cyclic).pack(side="left", padx=4)
-        ttk.Button(btns, text="用反馈位置填入", command=self.fill_pos_from_fb).pack(side="left", padx=4)
-        ttk.Label(tab, text="循环发送时会按当前输入框的值更新，并刷新上方反馈。").grid(
-            row=5, column=0, columnspan=3, sticky="w", padx=4
+    def _fill_channels(self, keep: str = "") -> None:
+        iface = self.cmb_iface.currentText().strip()
+        prev = keep or self.cmb_ch.currentText().strip()
+        channels = can_backends.list_channels(iface)
+        self.cmb_ch.blockSignals(True)
+        self.cmb_ch.clear()
+        self.cmb_ch.addItems(channels)
+        if prev:
+            idx = self.cmb_ch.findText(prev)
+            if idx >= 0:
+                self.cmb_ch.setCurrentIndex(idx)
+            else:
+                self.cmb_ch.setEditText(prev)
+        elif channels:
+            self.cmb_ch.setCurrentIndex(0)
+        self.cmb_ch.blockSignals(False)
+
+    def _on_iface_changed(self, _text: str = "") -> None:
+        iface = self.cmb_iface.currentText().strip()
+        self._fill_channels(can_backends.default_channel(iface))
+
+    def _scan_channels(self) -> None:
+        iface = self.cmb_iface.currentText().strip()
+        found = can_backends.detect_channels(iface)
+        self._fill_channels(self.cmb_ch.currentText().strip())
+        if found:
+            self._log(f"扫描 {iface}: " + ", ".join(found))
+        else:
+            self._log(f"扫描 {iface}: 未检测到设备，已列出常用通道，可手填")
+
+    def _metrics(self) -> QFrame:
+        box = QFrame()
+        box.setObjectName("card")
+        grid = QGridLayout(box)
+        self.val_pos = QLabel("—")
+        self.val_vel = QLabel("—")
+        self.val_volt = QLabel("—")
+        self.val_hz = QLabel("0 Hz")
+        self.val_state = QLabel("—")
+        self.val_fault = QLabel("—")
+        self.val_mode = QLabel("—")
+        items = (
+            ("位置 rad", self.val_pos),
+            ("速度 rad/s", self.val_vel),
+            ("电压 pu", self.val_volt),
+            ("反馈", self.val_hz),
+            ("State", self.val_state),
+            ("Fault", self.val_fault),
+            ("Mode", self.val_mode),
         )
+        for col, (name, val) in enumerate(items):
+            lab = QLabel(name)
+            lab.setObjectName("metric")
+            val.setObjectName("metricVal")
+            grid.addWidget(lab, 0, col)
+            grid.addWidget(val, 1, col)
+        return box
 
-    def _tab_vel(self, nb: ttk.Notebook) -> None:
-        tab = ttk.Frame(nb)
-        nb.add(tab, text="Velocity")
-        self.var_v_vel = tk.StringVar(value="0.0")
-        self.var_v_rate = tk.StringVar(value="200")
-        self._entry_row(tab, 0, "目标速度 rad/s", self.var_v_vel)
-        self._entry_row(tab, 1, "循环频率 Hz", self.var_v_rate)
-        btns = ttk.Frame(tab)
-        btns.grid(row=2, column=0, columnspan=2, pady=8, sticky="w", padx=4)
-        ttk.Button(btns, text="发送一次", command=self.send_velocity).pack(side="left", padx=4)
-        ttk.Button(btns, text="开始循环", command=self.start_cyclic_vel).pack(side="left", padx=4)
-        ttk.Button(btns, text="停止循环", command=self.stop_cyclic).pack(side="left", padx=4)
-        ttk.Label(
-            tab,
-            text="先 SET_CONTROL_MODE=VELOCITY，并设置 VELOCITY Gains（Kp/Ki，Kd=0）。\n"
-            "速度环是电压 PI，饱和时积分钳位抗饱和。停止循环后仍保持最后一帧目标。",
-        ).grid(row=3, column=0, columnspan=2, sticky="w", padx=4)
+    def _tabs(self) -> QTabWidget:
+        tabs = QTabWidget()
+        tabs.addTab(self._tab_motion(), "Motion")
+        tabs.addTab(self._tab_vel(), "Velocity")
+        tabs.addTab(self._tab_pos(), "Position")
+        tabs.addTab(self._tab_gains(), "Gains")
+        tabs.addTab(self._tab_mgmt(), "Management")
+        return tabs
 
-    def _tab_pos(self, nb: ttk.Notebook) -> None:
-        tab = ttk.Frame(nb)
-        nb.add(tab, text="Position")
-        self.var_p_pos = tk.StringVar(value="0.0")
-        self.var_p_maxv = tk.StringVar(value="10.0")
-        self.var_p_rate = tk.StringVar(value="200")
-        self._entry_row(tab, 0, "目标位置 rad", self.var_p_pos)
-        self._entry_row(tab, 1, "最大速度 rad/s", self.var_p_maxv)
-        self._entry_row(tab, 2, "循环频率 Hz", self.var_p_rate)
-        btns = ttk.Frame(tab)
-        btns.grid(row=3, column=0, columnspan=2, pady=8, sticky="w", padx=4)
-        ttk.Button(btns, text="发送一次", command=self.send_position).pack(side="left", padx=4)
-        ttk.Button(btns, text="开始循环", command=self.start_cyclic_pos).pack(side="left", padx=4)
-        ttk.Button(btns, text="停止循环", command=self.stop_cyclic).pack(side="left", padx=4)
-        ttk.Button(btns, text="用反馈位置填入", command=self.fill_pos_cmd_from_fb).pack(side="left", padx=4)
-        ttk.Label(
-            tab,
-            text="先设 VELOCITY Gains（内环 PI）和 POSITION Gains（外环 PID），再 SET_CONTROL_MODE=POSITION。\n"
-            "位置 D 用 -Kd·v（对测量微分，避免指令阶跃踢腿）。外环积分对 vmax 钳位；内环饱和时冻结外环积分。",
-        ).grid(row=4, column=0, columnspan=2, sticky="w", padx=4)
+    def _form(self, parent: QWidget, rows: list[tuple[str, QWidget]]) -> QFormLayout:
+        form = QFormLayout(parent)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        for label, widget in rows:
+            form.addRow(label, widget)
+        return form
 
-    def _tab_gains(self, nb: ttk.Notebook) -> None:
-        tab = ttk.Frame(nb)
-        nb.add(tab, text="Gains")
-        self.var_g_mode = tk.StringVar(value="MOTION")
-        self.var_g_kp = tk.StringVar(value="0.0")
-        self.var_g_ki = tk.StringVar(value="0.0")
-        self.var_g_kd = tk.StringVar(value="0.0")
-        ttk.Label(tab, text="参数组").grid(row=0, column=0, sticky="e", padx=4, pady=3)
-        ttk.Combobox(
+    def _tab_motion(self) -> QWidget:
+        tab = QWidget()
+        self.ed_m_pos = QLineEdit("0.0")
+        self.ed_m_vel = QLineEdit("0.0")
+        self.ed_m_ff = QLineEdit("0.0")
+        self.ed_m_rate = QLineEdit("200")
+        self._form(
             tab,
-            textvariable=self.var_g_mode,
-            values=("MOTION", "VELOCITY", "POSITION"),
-            state="readonly",
-            width=12,
-        ).grid(row=0, column=1, sticky="w")
-        self._entry_row(tab, 1, "Kp", self.var_g_kp)
-        self._entry_row(tab, 2, "Ki", self.var_g_ki)
-        self._entry_row(tab, 3, "Kd", self.var_g_kd)
-        ttk.Button(tab, text="发送 SET_GAINS", command=self.send_gains).grid(
-            row=4, column=0, columnspan=2, pady=8, sticky="w", padx=4
+            [
+                ("位置 rad", self.ed_m_pos),
+                ("速度 rad/s", self.ed_m_vel),
+                ("Voltage FF 0~1", self.ed_m_ff),
+                ("循环频率 Hz", self.ed_m_rate),
+            ],
         )
-        ttk.Label(
-            tab,
-            text="MOTION：Kp/Kd，Ki 必须为 0。\n"
-            "VELOCITY：Kp/Ki（电压 PI），Kd 必须为 0。POSITION：位置外环 Kp/Ki/Kd；内环用 VELOCITY 那组 PI。",
-        ).grid(row=5, column=0, columnspan=2, sticky="w", padx=4)
+        btns = QHBoxLayout()
+        for text, slot in (
+            ("发送一次", self.send_motion_once),
+            ("开始循环", self.start_cyclic_motion),
+            ("停止循环", self.stop_cyclic),
+            ("用反馈位置填入", self.fill_pos_from_fb),
+        ):
+            b = QPushButton(text)
+            if text == "停止循环":
+                b.setObjectName("ghost")
+            b.clicked.connect(slot)
+            btns.addWidget(b)
+        btns.addStretch(1)
+        wrap = QWidget()
+        wrap.setLayout(btns)
+        tab.layout().addRow(wrap)
+        hint = QLabel("循环发送才会持续触发 0x300 反馈，示波才能跟上。")
+        hint.setObjectName("scopeHint")
+        tab.layout().addRow(hint)
+        return tab
 
-    def _tab_mgmt(self, nb: ttk.Notebook) -> None:
-        tab = ttk.Frame(nb)
-        nb.add(tab, text="Management")
-        self.var_set_mode = tk.StringVar(value="MOTION")
-        row = ttk.Frame(tab)
-        row.grid(row=0, column=0, sticky="w", pady=6)
+    def _tab_vel(self) -> QWidget:
+        tab = QWidget()
+        self.ed_v_vel = QLineEdit("0.0")
+        self.ed_v_rate = QLineEdit("200")
+        self._form(tab, [("目标速度 rad/s", self.ed_v_vel), ("循环频率 Hz", self.ed_v_rate)])
+        btns = QHBoxLayout()
+        for text, slot in (
+            ("发送一次", self.send_velocity),
+            ("开始循环", self.start_cyclic_vel),
+            ("停止循环", self.stop_cyclic),
+        ):
+            b = QPushButton(text)
+            if text == "停止循环":
+                b.setObjectName("ghost")
+            b.clicked.connect(slot)
+            btns.addWidget(b)
+        btns.addStretch(1)
+        wrap = QWidget()
+        wrap.setLayout(btns)
+        tab.layout().addRow(wrap)
+        hint = QLabel("先 SET_CONTROL_MODE=VELOCITY，并设置 VELOCITY Gains。")
+        hint.setObjectName("scopeHint")
+        tab.layout().addRow(hint)
+        return tab
+
+    def _tab_pos(self) -> QWidget:
+        tab = QWidget()
+        self.ed_p_pos = QLineEdit("0.0")
+        self.ed_p_maxv = QLineEdit("100.0")
+        self.ed_p_rate = QLineEdit("200")
+        self._form(
+            tab,
+            [
+                ("目标位置 rad", self.ed_p_pos),
+                ("最大速度 rad/s", self.ed_p_maxv),
+                ("循环频率 Hz", self.ed_p_rate),
+            ],
+        )
+        btns = QHBoxLayout()
+        for text, slot in (
+            ("发送一次", self.send_position),
+            ("开始循环", self.start_cyclic_pos),
+            ("停止循环", self.stop_cyclic),
+            ("用反馈位置填入", self.fill_pos_cmd_from_fb),
+        ):
+            b = QPushButton(text)
+            if text == "停止循环":
+                b.setObjectName("ghost")
+            b.clicked.connect(slot)
+            btns.addWidget(b)
+        btns.addStretch(1)
+        wrap = QWidget()
+        wrap.setLayout(btns)
+        tab.layout().addRow(wrap)
+        hint = QLabel("上电默认位置模式。先配 VELOCITY / POSITION Gains。")
+        hint.setObjectName("scopeHint")
+        tab.layout().addRow(hint)
+        return tab
+
+    def _tab_gains(self) -> QWidget:
+        tab = QWidget()
+        self.cmb_g_mode = QComboBox()
+        self.cmb_g_mode.addItems(("MOTION", "VELOCITY", "POSITION"))
+        self.ed_g_kp = QLineEdit("0.0")
+        self.ed_g_ki = QLineEdit("0.0")
+        self.ed_g_kd = QLineEdit("0.0")
+        self._form(
+            tab,
+            [
+                ("参数组", self.cmb_g_mode),
+                ("Kp", self.ed_g_kp),
+                ("Ki", self.ed_g_ki),
+                ("Kd", self.ed_g_kd),
+            ],
+        )
+        btn = QPushButton("发送 SET_GAINS")
+        btn.clicked.connect(self.send_gains)
+        wrap = QWidget()
+        row = QHBoxLayout(wrap)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(btn)
+        row.addStretch(1)
+        tab.layout().addRow(wrap)
+        hint = QLabel("MOTION：Ki=0。VELOCITY：Kd=0。POSITION 只改外环，内环用 VELOCITY PI。")
+        hint.setObjectName("scopeHint")
+        tab.layout().addRow(hint)
+        return tab
+
+    def _tab_mgmt(self) -> QWidget:
+        tab = QWidget()
+        lay = QVBoxLayout(tab)
+        row = QHBoxLayout()
         for text, cmd in (
             ("ENABLE", proto.CMD_ENABLE),
             ("DISABLE", proto.CMD_DISABLE),
@@ -281,33 +401,40 @@ class HostGui:
             ("START_CALI", proto.CMD_START_CALI),
             ("GET_STATUS", proto.CMD_GET_STATUS),
         ):
-            ttk.Button(row, text=text, command=lambda c=cmd: self.send_mgmt(c)).pack(side="left", padx=3)
-        mode_row = ttk.Frame(tab)
-        mode_row.grid(row=1, column=0, sticky="w", pady=6)
-        ttk.Label(mode_row, text="SET_CONTROL_MODE").pack(side="left", padx=4)
-        ttk.Combobox(
-            mode_row,
-            textvariable=self.var_set_mode,
-            values=("MOTION", "VELOCITY", "POSITION"),
-            state="readonly",
-            width=12,
-        ).pack(side="left")
-        ttk.Button(mode_row, text="发送", command=self.send_set_mode).pack(side="left", padx=6)
-        ttk.Label(
-            tab,
-            text="上电默认 MOTION。SET_CONTROL_MODE 可在 RUNNING 下切换三模式；切换后清积分，需再发对应实时命令。\n"
-            "START_CALI 会先 ACK(CALIBRATING)，再约 50 ms 上报 0x3C0；成功后直接回 RUNNING。\n"
-            "失败后需 CLEAR_FAULT 再重试。ENABLE/DISABLE 仍返回 INVALID_COMMAND。\n"
-            "校准期间电机会开环转动，请先停掉实时循环发送。",
-        ).grid(row=2, column=0, sticky="w", padx=4, pady=8)
+            b = QPushButton(text)
+            if text in ("ENABLE", "DISABLE"):
+                b.setObjectName("ghost")
+            b.clicked.connect(lambda _=False, c=cmd: self.send_mgmt(c))
+            row.addWidget(b)
+        row.addStretch(1)
+        lay.addLayout(row)
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("SET_CONTROL_MODE"))
+        self.cmb_set_mode = QComboBox()
+        self.cmb_set_mode.addItems(("MOTION", "VELOCITY", "POSITION"))
+        self.cmb_set_mode.setCurrentText("POSITION")
+        mode_row.addWidget(self.cmb_set_mode)
+        btn = QPushButton("发送")
+        btn.clicked.connect(self.send_set_mode)
+        mode_row.addWidget(btn)
+        mode_row.addStretch(1)
+        lay.addLayout(mode_row)
+        hint = QLabel(
+            "上电默认 POSITION。ENABLE/DISABLE 仍返回 INVALID_COMMAND。"
+            "校准前先停止循环发送。"
+        )
+        hint.setObjectName("scopeHint")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        lay.addStretch(1)
+        return tab
 
     def _log(self, text: str) -> None:
-        self.log.insert("end", text + "\n")
-        self.log.see("end")
+        self.log.appendPlainText(text)
 
     def _need_worker(self) -> CanWorker | None:
         if self.worker is None:
-            messagebox.showwarning("未连接", "请先连接 CAN")
+            QMessageBox.warning(self, "未连接", "请先连接 CAN")
             return None
         return self.worker
 
@@ -316,29 +443,31 @@ class HostGui:
         self.seq = (self.seq + 1) & 0xFF
         return seq
 
-    def _f(self, var: tk.StringVar) -> float:
-        return float(var.get().strip())
+    def _f(self, edit: QLineEdit) -> float:
+        return float(edit.text().strip())
 
-    def connect(self) -> None:
-        self.disconnect()
+    def connect_bus(self) -> None:
+        self.disconnect_bus()
+        iface = self.cmb_iface.currentText().strip()
+        channel = self.cmb_ch.currentText().strip()
         try:
-            node_id = int(self.var_id.get())
-            bus = can.Bus(
-                interface=self.var_iface.get().strip(),
-                channel=self.var_ch.get().strip(),
-                bitrate=int(self.var_bitrate.get()),
-            )
+            node_id = int(self.ed_id.text())
+            bitrate = int(self.cmb_bitrate.currentText().strip())
+            bus = can_backends.open_bus(iface, channel, bitrate)
         except Exception as exc:
-            messagebox.showerror("连接失败", str(exc))
+            QMessageBox.critical(self, "连接失败", str(exc))
             return
         self.bus = bus
         self.rx_q = queue.Queue()
         self.worker = CanWorker(bus, node_id, self.rx_q)
         self.worker.start()
-        self.lbl_conn.configure(text=f"已连接  ID={node_id}", foreground="green")
-        self._log(f"connected iface={self.var_iface.get()} ch={self.var_ch.get()} id={node_id}")
+        self.lbl_conn.setText(f"已连接  {iface}:{channel}  ID={node_id}")
+        self.lbl_conn.setObjectName("connOk")
+        self.lbl_conn.style().unpolish(self.lbl_conn)
+        self.lbl_conn.style().polish(self.lbl_conn)
+        self._log(f"connected iface={iface} ch={channel} bitrate={self.cmb_bitrate.currentText()} id={node_id}")
 
-    def disconnect(self) -> None:
+    def disconnect_bus(self) -> None:
         if self.worker is not None:
             self.worker.set_cyclic(False, 1.0, 0, lambda: proto.pack_motion(0.0, 0.0, 0.0))
             self.worker.stop()
@@ -350,39 +479,29 @@ class HostGui:
             except Exception:
                 pass
             self.bus = None
-        self.lbl_conn.configure(text="未连接", foreground="gray")
+        self.lbl_conn.setText("未连接")
+        self.lbl_conn.setObjectName("connOff")
+        self.lbl_conn.style().unpolish(self.lbl_conn)
+        self.lbl_conn.style().polish(self.lbl_conn)
+        self.scope.set_status(False, self.fb_hz)
 
-    def on_close(self) -> None:
-        self.disconnect()
-        self.root.destroy()
-
-    def send_motion_once(self) -> None:
-        w = self._need_worker()
-        if w is None:
-            return
-        try:
-            data = self._refresh_snap()
-        except ValueError:
-            messagebox.showerror("参数错误", "位置/速度/FF 必须是数字")
-            return
-        w.send(w.ids["motion"], data)
-        self._log(
-            f"TX Motion pos={self.var_m_pos.get()} vel={self.var_m_vel.get()} ff={self.var_m_ff.get()}"
-        )
+    def closeEvent(self, event) -> None:
+        self.disconnect_bus()
+        super().closeEvent(event)
 
     def _refresh_snap(self) -> bytes:
-        pos = self._f(self.var_m_pos)
-        vel = self._f(self.var_m_vel)
-        ff = self._f(self.var_m_ff)
+        pos = self._f(self.ed_m_pos)
+        vel = self._f(self.ed_m_vel)
+        ff = self._f(self.ed_m_ff)
         with self._snap_lock:
             self._snap = (pos, vel, ff)
         return proto.pack_motion(pos, vel, ff)
 
     def _refresh_vel_pos_snap(self) -> None:
         try:
-            vel = self._f(self.var_v_vel)
-            ppos = self._f(self.var_p_pos)
-            pmax = self._f(self.var_p_maxv)
+            vel = self._f(self.ed_v_vel)
+            ppos = self._f(self.ed_p_pos)
+            pmax = self._f(self.ed_p_maxv)
         except ValueError:
             return
         with self._snap_lock:
@@ -404,15 +523,27 @@ class HostGui:
             pos, maxv = self._pos_snap
         return proto.pack_position(pos, maxv)
 
-    def start_cyclic(self) -> None:
+    def send_motion_once(self) -> None:
         w = self._need_worker()
         if w is None:
             return
         try:
-            rate = float(self.var_m_rate.get())
+            data = self._refresh_snap()
+        except ValueError:
+            QMessageBox.critical(self, "参数错误", "位置/速度/FF 必须是数字")
+            return
+        w.send(w.ids["motion"], data)
+        self._log(f"TX Motion pos={self.ed_m_pos.text()} vel={self.ed_m_vel.text()} ff={self.ed_m_ff.text()}")
+
+    def start_cyclic_motion(self) -> None:
+        w = self._need_worker()
+        if w is None:
+            return
+        try:
+            rate = float(self.ed_m_rate.text())
             self._refresh_snap()
         except ValueError:
-            messagebox.showerror("参数错误", "频率和 Motion 参数必须是数字")
+            QMessageBox.critical(self, "参数错误", "频率和 Motion 参数必须是数字")
             return
         w.set_cyclic(True, rate, w.ids["motion"], self._motion_payload)
         self.fb_count = 0
@@ -424,10 +555,10 @@ class HostGui:
         if w is None:
             return
         try:
-            rate = float(self.var_v_rate.get())
-            vel = self._f(self.var_v_vel)
+            rate = float(self.ed_v_rate.text())
+            vel = self._f(self.ed_v_vel)
         except ValueError:
-            messagebox.showerror("参数错误", "频率和速度必须是数字")
+            QMessageBox.critical(self, "参数错误", "频率和速度必须是数字")
             return
         self._refresh_vel_pos_snap()
         w.set_cyclic(True, rate, w.ids["vel"], self._vel_payload)
@@ -440,11 +571,11 @@ class HostGui:
         if w is None:
             return
         try:
-            rate = float(self.var_p_rate.get())
-            pos = self._f(self.var_p_pos)
-            maxv = self._f(self.var_p_maxv)
+            rate = float(self.ed_p_rate.text())
+            pos = self._f(self.ed_p_pos)
+            maxv = self._f(self.ed_p_maxv)
         except ValueError:
-            messagebox.showerror("参数错误", "频率和位置参数必须是数字")
+            QMessageBox.critical(self, "参数错误", "频率和位置参数必须是数字")
             return
         self._refresh_vel_pos_snap()
         w.set_cyclic(True, rate, w.ids["pos"], self._pos_payload)
@@ -458,53 +589,51 @@ class HostGui:
         self._log("cyclic stopped")
 
     def fill_pos_from_fb(self) -> None:
-        text = self.var_fb_pos.get()
-        if text not in ("—", ""):
-            self.var_m_pos.set(text)
+        if self.val_pos.text() not in ("—", ""):
+            self.ed_m_pos.setText(self.val_pos.text())
 
     def fill_pos_cmd_from_fb(self) -> None:
-        text = self.var_fb_pos.get()
-        if text not in ("—", ""):
-            self.var_p_pos.set(text)
+        if self.val_pos.text() not in ("—", ""):
+            self.ed_p_pos.setText(self.val_pos.text())
 
     def send_velocity(self) -> None:
         w = self._need_worker()
         if w is None:
             return
         try:
-            data = proto.pack_velocity(self._f(self.var_v_vel))
+            data = proto.pack_velocity(self._f(self.ed_v_vel))
         except ValueError:
-            messagebox.showerror("参数错误", "速度必须是数字")
+            QMessageBox.critical(self, "参数错误", "速度必须是数字")
             return
         w.send(w.ids["vel"], data)
-        self._log(f"TX Velocity vel={self.var_v_vel.get()}")
+        self._log(f"TX Velocity vel={self.ed_v_vel.text()}")
 
     def send_position(self) -> None:
         w = self._need_worker()
         if w is None:
             return
         try:
-            data = proto.pack_position(self._f(self.var_p_pos), self._f(self.var_p_maxv))
+            data = proto.pack_position(self._f(self.ed_p_pos), self._f(self.ed_p_maxv))
         except ValueError:
-            messagebox.showerror("参数错误", "位置/最大速度必须是数字")
+            QMessageBox.critical(self, "参数错误", "位置/最大速度必须是数字")
             return
         w.send(w.ids["pos"], data)
-        self._log(f"TX Position pos={self.var_p_pos.get()} max_vel={self.var_p_maxv.get()}")
+        self._log(f"TX Position pos={self.ed_p_pos.text()} max_vel={self.ed_p_maxv.text()}")
 
     def send_gains(self) -> None:
         w = self._need_worker()
         if w is None:
             return
         mode_map = {"MOTION": proto.MODE_MOTION, "VELOCITY": proto.MODE_VELOCITY, "POSITION": proto.MODE_POSITION}
-        mode = mode_map[self.var_g_mode.get()]
         try:
-            kp, ki, kd = self._f(self.var_g_kp), self._f(self.var_g_ki), self._f(self.var_g_kd)
+            kp, ki, kd = self._f(self.ed_g_kp), self._f(self.ed_g_ki), self._f(self.ed_g_kd)
         except ValueError:
-            messagebox.showerror("参数错误", "Kp/Ki/Kd 必须是数字")
+            QMessageBox.critical(self, "参数错误", "Kp/Ki/Kd 必须是数字")
             return
         seq = self._next_seq()
+        mode = mode_map[self.cmb_g_mode.currentText()]
         w.send(w.ids["gains"], proto.pack_gains(mode, seq, kp, ki, kd))
-        self._log(f"TX SET_GAINS mode={self.var_g_mode.get()} seq={seq} kp={kp} ki={ki} kd={kd}")
+        self._log(f"TX SET_GAINS mode={self.cmb_g_mode.currentText()} seq={seq} kp={kp} ki={ki} kd={kd}")
 
     def send_mgmt(self, cmd: int) -> None:
         w = self._need_worker()
@@ -520,9 +649,9 @@ class HostGui:
             return
         mode_map = {"MOTION": proto.MODE_MOTION, "VELOCITY": proto.MODE_VELOCITY, "POSITION": proto.MODE_POSITION}
         seq = self._next_seq()
-        mode = mode_map[self.var_set_mode.get()]
+        mode = mode_map[self.cmb_set_mode.currentText()]
         w.send(w.ids["mgmt"], proto.pack_mgmt(proto.CMD_SET_MODE, seq, mode))
-        self._log(f"TX SET_CONTROL_MODE {self.var_set_mode.get()} seq={seq}")
+        self._log(f"TX SET_CONTROL_MODE {self.cmb_set_mode.currentText()} seq={seq}")
 
     def _poll_rx(self) -> None:
         try:
@@ -530,31 +659,34 @@ class HostGui:
         except ValueError:
             pass
         self._refresh_vel_pos_snap()
+        cyclic = self.worker.is_cyclic() if self.worker is not None else False
         try:
             while True:
                 kind, payload = self.rx_q.get_nowait()
                 if kind == "fb":
-                    self.var_fb_pos.set(f"{payload['pos']:.4f}")
-                    self.var_fb_vel.set(f"{payload['vel']:.3f}")
-                    self.var_fb_t.set(f"{payload['torque']:.3f}")
+                    self.val_pos.setText(f"{payload['pos']:.4f}")
+                    self.val_vel.setText(f"{payload['vel']:.3f}")
+                    self.val_volt.setText(f"{payload['torque']:.3f}")
+                    self.scope.push_feedback(payload["pos"], payload["vel"], payload["torque"])
                     self.fb_count += 1
                     dt = time.monotonic() - self.fb_t0
                     if dt >= 0.5:
-                        self.var_fb_hz.set(f"{self.fb_count / dt:.0f} Hz")
+                        self.fb_hz = self.fb_count / dt
+                        self.val_hz.setText(f"{self.fb_hz:.0f} Hz")
                         self.fb_count = 0
                         self.fb_t0 = time.monotonic()
                 elif kind == "ack":
-                    self.var_state.set(str(payload["state_name"]))
-                    self.var_fault.set(str(payload["fault_name"]))
+                    self.val_state.setText(str(payload["state_name"]))
+                    self.val_fault.setText(str(payload["fault_name"]))
                     self._log(
                         f"ACK {payload['cmd_name']} seq={payload['seq']} "
                         f"{payload['result_name']} state={payload['state_name']} "
                         f"fault={payload['fault_name']}"
                     )
                 elif kind == "status":
-                    self.var_state.set(str(payload["state_name"]))
-                    self.var_fault.set(str(payload["fault_name"]))
-                    self.var_mode.set(str(payload["mode_name"]))
+                    self.val_state.setText(str(payload["state_name"]))
+                    self.val_fault.setText(str(payload["fault_name"]))
+                    self.val_mode.setText(str(payload["mode_name"]))
                     self._log(
                         f"STATUS {payload['state_name']} mode={payload['mode_name']} "
                         f"fault={payload['fault_name']} Vbus={payload['vbus']:.2f}V "
@@ -570,16 +702,18 @@ class HostGui:
                     self._log(f"ERROR {payload}")
         except queue.Empty:
             pass
-        self.root.after(30, self._poll_rx)
+        self.scope.set_status(cyclic, self.fb_hz)
 
 
 def main() -> int:
     print("starting YFOCV3 GUI ...", flush=True)
-    root = tk.Tk()
-    root.minsize(900, 640)
-    HostGui(root)
-    root.mainloop()
-    return 0
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    app.setFont(QFont("Segoe UI", 10))
+    app.setStyleSheet(STYLE)
+    win = HostWindow()
+    win.show()
+    return app.exec()
 
 
 if __name__ == "__main__":

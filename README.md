@@ -141,7 +141,9 @@ Gains `0x180+ID`：Byte0=Control Mode，Byte1=Sequence。MOTION：Kp `0.01 pu/ra
 
 ## 上位机
 
-先进入 `host/` 再建虚拟环境。Windows 用 PEAK PCAN（需先装 [PCAN-Basic](https://www.peak-system.com/PCAN-Basic.239.0.html)），Linux 用 SocketCAN。
+先进入 `host/` 再建虚拟环境。GUI 按系统列出常用接口，通道可下拉或手填，点「扫描」探测已接适配器。
+
+Windows 常用 PEAK PCAN（需先装 [PCAN-Basic](https://www.peak-system.com/PCAN-Basic.239.0.html)）。Linux 用 SocketCAN。macOS 没有 SocketCAN，一般用 slcan / PCAN。接口与通道也可手填，例如 `slcan` + `COM3` 或 `/dev/ttyACM0`。
 
 Windows（PowerShell）：
 
@@ -153,7 +155,7 @@ pip install -r requirements.txt
 python servo_gui.py
 ```
 
-GUI 可发送协议内全部命令。Motion / Velocity / Position 均支持单次或循环发送，并刷新反馈。ENABLE/DISABLE 仍会返回 `INVALID_COMMAND`。校准前请先停止实时循环。
+GUI（PySide6 + [pyqtgraph](https://github.com/pyqtgraph/pyqtgraph)）可发送协议内全部命令，并在下方示波窗口画实时反馈：位置 / 速度 / 电压。横轴可选时间 t（无新数据也会滚动）或按帧；通道可勾选，窗口长度可调。固件只在有效实时命令后回 `0x300`，要快刷曲线请打开对应模式的循环发送。ENABLE/DISABLE 仍会返回 `INVALID_COMMAND`。校准前请先停止实时循环。
 
 Windows 激活 venv 后请用 `python`，不要用 `python3`：系统里的 `python3` 往往是 Microsoft Store 占位程序，会立刻退出且不报错。
 
@@ -164,7 +166,7 @@ python servo_host.py --interface pcan --channel PCAN_USBBUS1 --id 1 --listen
 
 第二块 USB 适配器一般是 `PCAN_USBBUS2`。
 
-Linux / macOS：
+Linux：
 
 ```bash
 cd host
@@ -172,6 +174,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python3 servo_gui.py
+python3 servo_host.py --list-can
 python3 servo_host.py --interface socketcan --channel can0 --id 1 --pos 0 --vel 10 --kp 0 --kd 0.016
 python3 servo_host.py --interface socketcan --channel can0 --id 1 --listen
 ```
@@ -182,7 +185,7 @@ SocketCAN 示例：
 sudo ip link set can0 up type can bitrate 1000000
 ```
 
-slcan：`--interface slcan --channel /dev/ttyACM0`。
+macOS / slcan：`--interface slcan --channel /dev/cu.usbserial` 或 Windows `COM3`。`python servo_host.py --list-can` 可列出当前接口下探测到的通道。
 
 ## 调试
 

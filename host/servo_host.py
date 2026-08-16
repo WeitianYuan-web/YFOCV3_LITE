@@ -13,15 +13,17 @@ except ImportError:
     print("python-can is required: pip install python-can", file=sys.stderr)
     raise
 
+import can_backends
 import protocol as proto
 
 
 def parse_args() -> argparse.Namespace:
-    default_interface = "pcan" if sys.platform == "win32" else "socketcan"
-    default_channel = "PCAN_USBBUS1" if sys.platform == "win32" else "can0"
+    default_interface = can_backends.default_interface()
+    default_channel = can_backends.default_channel(default_interface)
     parser = argparse.ArgumentParser(description="YFOCV3 voltage servo host")
     parser.add_argument("--interface", default=default_interface, help="python-can interface")
     parser.add_argument("--channel", default=default_channel, help="CAN channel / slcan device")
+    parser.add_argument("--list-can", action="store_true", help="list detected CAN channels and exit")
     parser.add_argument("--bitrate", type=int, default=1000000)
     parser.add_argument("--id", type=int, default=1, help="motor id 1..63")
     parser.add_argument("--pos", type=float, default=0.0, help="target angle rad")
@@ -54,12 +56,19 @@ def main() -> int:
         from servo_gui import main as gui_main
 
         return gui_main()
+    if args.list_can:
+        iface = args.interface
+        found = can_backends.detect_channels(iface)
+        print(f"interface={iface} default_channel={can_backends.default_channel(iface)}")
+        print("detected: " + (", ".join(found) if found else "(none)"))
+        print("choices:  " + ", ".join(can_backends.list_channels(iface)))
+        return 0
 
     ids = proto.ids(args.id)
-    bus = can.Bus(interface=args.interface, channel=args.channel, bitrate=args.bitrate)
+    bus = can_backends.open_bus(args.interface, args.channel, args.bitrate)
     motion = proto.pack_motion(args.pos, args.vel, args.ff)
     period = 0.0 if args.rate <= 0.0 else 1.0 / args.rate
-    last_tx = 0.0
+    next_tx = 0.0
     seq = 1
 
     print(
@@ -80,11 +89,17 @@ def main() -> int:
 
         while True:
             now = time.monotonic()
-            if not args.listen and (last_tx == 0.0 or (now - last_tx) >= period):
+            if not args.listen and period > 0.0 and (next_tx == 0.0 or now >= next_tx):
                 bus.send(can.Message(arbitration_id=ids["motion"], data=motion, is_extended_id=False))
-                last_tx = now
+                if next_tx == 0.0:
+                    next_tx = now + period
+                else:
+                    next_tx += period
+                    if next_tx < now:
+                        next_tx = now + period
 
-            msg = bus.recv(timeout=0.05)
+            leftover = (next_tx - time.monotonic()) if (not args.listen and period > 0.0) else 0.05
+            msg = bus.recv(timeout=min(0.001, max(0.0, leftover)) if period > 0.0 and not args.listen else 0.05)
             if msg is None or msg.is_extended_id:
                 continue
             if msg.arbitration_id == ids["fb"]:
