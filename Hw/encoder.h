@@ -2,12 +2,17 @@
 #define ENCODER_H
 
 #include <stdint.h>
+#include "config.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+#if (CFG_ENCODER_TYPE == CFG_ENCODER_KTH7812)
+#define ENCODER_CPR           65536U
+#else
 #define ENCODER_CPR           16384U
+#endif
 #define ENCODER_READ_INVALID  0xFFFFU
 
 void Encoder_Init(void);

@@ -59,7 +59,7 @@ openocd -s /path/to/openocd/scripts -f scripts/openocd-stm32g431.cfg \
 |------|------|
 | TIM1 PWM 高侧 | PA8 / PA9 / PA10 |
 | TIM1 PWM 低侧 | PB13 / PB14 / PB15 |
-| SPI1 编码器 | PA5/6/7，CS=PA4 |
+| SPI1 编码器 | PA5/6/7，CS=PA4（`CFG_ENCODER_TYPE`：MT6701 SSI 或 KTH7812 SPI Mode3） |
 | FDCAN1 | PA11 / PA12，Classic 1 Mbps |
 | LED | PC13，高电平亮 |
 | 时钟 | HSE 32 MHz → 170 MHz |
@@ -193,4 +193,4 @@ SEGGER RTT（SWD）。LC-ESC 的 PB3 是按键，不要用 SWO。主循环约 20
 
 ## 注意
 
-电压模式没有软件过流保护，依赖功率级硬件。编码器默认 MT6701 SSI。
+电压模式没有软件过流保护，依赖功率级硬件。编码器由 `config.h` 的 `CFG_ENCODER_TYPE` 选择：默认 `CFG_ENCODER_MT6701`（SSI 14 bit）；换成 KTH7812 时设为 `CFG_ENCODER_KTH7812`（SPI Mode3，16 bit，无 CRC 的 -N 型号）。换芯片后必须重校准。

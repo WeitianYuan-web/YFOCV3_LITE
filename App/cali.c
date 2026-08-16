@@ -196,6 +196,17 @@ static uint8_t Cali_Run(void)
     Cali_Fail("cali: enc fail", CALI_ERR_ENCODER);
     return 0U;
   }
+  {
+    uint16_t raw0 = 0U;
+    uint16_t raw1 = 0U;
+    (void)Encoder_ReadFrame(&raw0, 0);
+    Cali_Delay(20U);
+    (void)Encoder_ReadFrame(&raw1, 0);
+    Dbg_Printf("cali: raw=%u %u th0=%d\r\n",
+               (unsigned)raw0,
+               (unsigned)raw1,
+               (int)(theta0 * 1000.0f));
+  }
 
   Cali_SetReport(CALI_ST_RUNNING, 25U, CALI_STAGE_SAMPLE, CALI_ERR_NONE);
   if (Cali_RotateMeasure(&delta) == 0U)
@@ -218,6 +229,12 @@ static uint8_t Cali_Run(void)
     encoder_dir = -1;
   }
 
+  {
+    const float elec_delta = CFG_CALI_ROTATE_ELEC_RAD_S *
+                             ((float)CFG_CALI_ROTATE_MS / 1000.0f);
+    const float pp_f = (Cali_Absf(delta) > 1.0e-6f) ? (elec_delta / Cali_Absf(delta)) : 0.0f;
+    Dbg_Printf("cali: d=%d ppx100=%d\r\n", (int)(delta * 1000.0f), (int)(pp_f * 100.0f));
+  }
   if (Cali_EstimatePolePairs(delta, &pole_pairs) == 0U)
   {
     Cali_Fail("cali: pp bad", CALI_ERR_DATA);
@@ -240,21 +257,46 @@ static uint8_t Cali_Run(void)
   Foc_EncoderReset(Servo_GetEncoder(), theta0);
 
   Servo_SetClosedLoopDir(1);
-  Servo_SetVoltageCmd(0.0f, CFG_CALI_PROBE_VQ);
-  Cali_Delay(CFG_CALI_PROBE_MS);
-  vel = Foc_EncoderGetVelocity(Servo_GetEncoder());
-  Servo_SetVoltageCmd(0.0f, 0.0f);
-  Cali_Delay(80U);
-
-  if ((vel > -CFG_CALI_MIN_VEL) && (vel < CFG_CALI_MIN_VEL))
   {
-    Cali_Fail("cali: probe vel small", CALI_ERR_DATA);
-    return 0U;
-  }
+    float last;
+    float theta;
+    float acc = 0.0f;
+    uint32_t t0;
 
-  if (vel < 0.0f)
-  {
-    closed_loop_dir = -1;
+    if (Cali_ReadRawMech(&last) == 0U)
+    {
+      Cali_Fail("cali: enc fail", CALI_ERR_ENCODER);
+      return 0U;
+    }
+    last = Foc_ApplyEncoderDirToMechTheta(last, encoder_dir);
+    Servo_SetVoltageCmd(0.0f, CFG_CALI_PROBE_VQ);
+    t0 = HAL_GetTick();
+    while ((HAL_GetTick() - t0) < CFG_CALI_PROBE_MS)
+    {
+      Cali_Delay(CFG_CALI_ROTATE_SAMPLE_MS);
+      if (Cali_ReadRawMech(&theta) == 0U)
+      {
+        Servo_SetVoltageCmd(0.0f, 0.0f);
+        Cali_Fail("cali: enc fail", CALI_ERR_ENCODER);
+        return 0U;
+      }
+      theta = Foc_ApplyEncoderDirToMechTheta(theta, encoder_dir);
+      acc += Foc_WrapAngleToPi(theta - last);
+      last = theta;
+    }
+    vel = Foc_EncoderGetVelocity(Servo_GetEncoder());
+    Servo_SetVoltageCmd(0.0f, 0.0f);
+    Cali_Delay(80U);
+    Dbg_Printf("cali: probe d=%d v=%d\r\n", (int)(acc * 1000.0f), (int)(vel * 1000.0f));
+    if ((acc > -CFG_CALI_MIN_MECH_DELTA) && (acc < CFG_CALI_MIN_MECH_DELTA))
+    {
+      Cali_Fail("cali: probe vel small", CALI_ERR_DATA);
+      return 0U;
+    }
+    if (acc < 0.0f)
+    {
+      closed_loop_dir = -1;
+    }
   }
   Servo_SetClosedLoopDir(closed_loop_dir);
   Servo_HoldPosition();
