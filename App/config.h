@@ -19,7 +19,7 @@ extern "C" {
 
 #define CFG_V_LIMIT                 (0.4f)     /* pu; 1.0 = PWM full scale */
 #define CFG_V_SLEW_PU_S             (100.0f)   /* max |d(Vd,Vq)/dt|, pu/s */
-#define CFG_VEL_PLL_HZ              (200.0f)   /* Type-2 PLL bandwidth; 40-120 typical */
+#define CFG_VEL_PLL_HZ              (50.0f)   /* Type-2 PLL bandwidth; 40-120 typical */
 #define CFG_VEL_PLL_ZETA            (0.707f)   /* zeta = 0.707 for critically damped response */
 
 #define CFG_CAN_MOTION_BASE         (0x100U)
@@ -37,14 +37,30 @@ extern "C" {
 #define CFG_VEL_LSB                 (0.1f)
 #define CFG_KP_LSB                  (0.01f)
 #define CFG_KD_LSB                  (0.001f)
+#define CFG_KP_VEL_LSB              (0.001f)
+#define CFG_KI_VEL_LSB              (0.001f)
+#define CFG_KP_POS_LSB              (0.01f)
+#define CFG_KI_POS_LSB              (0.001f)
+#define CFG_KD_POS_LSB              (0.001f)
 #define CFG_TORQUE_LSB              (0.001f)
 
 #define CFG_VEL_CMD_MIN             (-100.0f)
 #define CFG_VEL_CMD_MAX             (100.0f)
+#define CFG_POS_VMAX_DEFAULT        (100.0f)
+#define CFG_VEL_KP_DEFAULT          (0.01f)    /* pu/(rad/s) */
+#define CFG_VEL_KI_DEFAULT          (0.3f)    /* pu/rad */
+#define CFG_POS_KP_DEFAULT          (3.0f)    /* 1/s */
+#define CFG_POS_KI_DEFAULT          (0.1f)     /* 1/s^2 */
+#define CFG_POS_KD_DEFAULT          (0.0f)
 #define CFG_KP_MIN                  (0.0f)
-#define CFG_KP_MAX                  (500.0f)
+#define CFG_KP_MAX                  (5.0f)
 #define CFG_KD_MIN                  (0.0f)
-#define CFG_KD_MAX                  (5.0f)
+#define CFG_KD_MAX                  (1.0f)
+#define CFG_KP_VEL_MAX              (1.0f)
+#define CFG_KI_VEL_MAX              (10.0f)
+#define CFG_KP_POS_MAX              (50.0f)
+#define CFG_KI_POS_MAX              (5.0f)
+#define CFG_KD_POS_MAX              (5.0f)
 
 #define CFG_CALI_LOCK_V             (0.15f)
 #define CFG_CALI_LOCK_MS            (500U)

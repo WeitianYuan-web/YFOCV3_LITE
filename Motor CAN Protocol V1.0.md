@@ -10,9 +10,11 @@
 
 | 项目 | 说明 |
 |---|---|
-| Motion `0x100` | 电压模式：Position / Velocity / `VoltageFF = Raw/65535`；有效帧后回 `0x300`；同一次 RX 处理只执行最后一帧有效 Motion |
-| Gains `0x180` | 仅 `MOTION_MODE`；Ki 必须为 0；Kp `0.01 pu/rad`，Kd `0.001 pu·s/rad`；ACK `0x280` Command=`0x20` |
-| SET_ZERO / GET_STATUS / SET_CONTROL_MODE(MOTION) | 已接入 |
+| Motion `0x100` | 电压模式：Position / Velocity / `VoltageFF = Raw/65535`；有效帧后回 `0x300`；同一次 RX 处理只执行最后一帧有效实时命令 |
+| Velocity `0x140` | 电压 PI：`u = Kp e_v + Ki ∫e_v`；积分对 `±V_LIMIT` 钳位抗饱和 |
+| Position `0x1C0` | 位置 PID 外环 + 速度 PI 内环（内环用 VELOCITY Gains）；外环积分对 `±vmax` 钳位，内环电压饱和时冻结外环积分 |
+| Gains `0x180` | 三组都接受。MOTION：Ki=0；VELOCITY：Kd=0；POSITION：外环 Kp/Ki/Kd |
+| SET_ZERO / GET_STATUS / SET_CONTROL_MODE | 已接入；上电默认 `MOTION_MODE`；`RUNNING` 下可切换三模式 |
 | CLEAR_FAULT | 可清除闩锁的 `CALIBRATION_FAULT` |
 | START_ENCODER_CALIBRATION + `0x3C0` | 先 ACK 再校准；约 50 ms 上报，Stage 变化立即多发一帧 |
 | 非实时重发 | 相同 Command+Sequence 重发缓存应答，不重复执行 |
@@ -23,9 +25,9 @@
 | 原文 | 本固件 |
 |---|---|
 | 上电 `DISABLED`，`ENABLE` → `READY`，有效实时命令 → `RUNNING` | 上电校准/加载成功 → `RUNNING`；失败 → `FAULT` + `CALIBRATION_FAULT` |
-| 停止控制前必须 `DISABLE` | 无 `DISABLE`；保持最后一帧有效 Motion，直到新 Motion、校准、FAULT 或掉电 |
+| 停止控制前必须 `DISABLE` | 无 `DISABLE`；保持最后一帧有效实时命令，直到同模式新命令、模式切换、校准、FAULT 或掉电 |
 | `START_ENCODER_CALIBRATION` 仅 `DISABLED`；成功后回 `DISABLED`，需再 `ENABLE` | `RUNNING` 下可启动；成功后回 `RUNNING` |
-| `SET_CONTROL_MODE` 仅 `DISABLED`/`READY` | `RUNNING` 下可设 `MOTION_MODE`；`VELOCITY`/`POSITION` 返回 `PARAMETER_OUT_OF_RANGE` |
+| `SET_CONTROL_MODE` 仅 `DISABLED`/`READY` | `RUNNING` 下可切换三模式；切换后清零积分/微分状态并清除目标有效标志，电压输出为 0 直到收到新模式的有效实时命令 |
 | 校准成功 Motor State=`DISABLED` | 校准成功 Motor State=`RUNNING` |
 | 校准失败后 `CLEAR_FAULT` 再 `START_CALI`（后者原文要求 `DISABLED`） | 清除校准故障后 State=`RUNNING`，PWM 关闭、伺服 IDLE，须再校准成功才接受 Motion |
 | Feedback Torque = `0.001 Nm/LSB` | 无转矩传感器；Byte6~7 为电压指令 `0.001 pu/LSB` |
@@ -36,8 +38,6 @@
 
 | 项目 | 当前行为 |
 |---|---|
-| Velocity 模式 `0x140`、速度 PI Gains | 过滤器收包，不执行、不回 Feedback；设该模式 Gains/`SET_CONTROL_MODE` → `PARAMETER_OUT_OF_RANGE` |
-| Position 模式 `0x1C0`、位置 PID Gains | 同上 |
 | `ENABLE` `0x01` / `DISABLE` `0x02` | `INVALID_COMMAND` |
 | 转矩模式编码（Motion FF / Gains / Feedback） | 本固件固定为电压模式 |
 | 母线电压、电机温度、Warning 位 | `GET_STATUS` 对应字段填 0 |
@@ -72,7 +72,7 @@ CAN ID 分配：
 | `0x380 + ID` | 电机 → 主机 | Status Response |
 | `0x3C0 + ID` | 电机 → 主机 | Encoder Calibration Report |
 
-> **本固件：** `0x140` / `0x1C0` 硬件过滤会收包但不执行。`0x380` 只作为 `GET_STATUS` 应答，不主动发 Fault Event。
+> **本固件：** 三模式均已实现。`0x380` 只作为 `GET_STATUS` 应答，不主动发 Fault Event。
 
 ### Control Mode
 
@@ -84,7 +84,7 @@ CAN ID 分配：
 
 Control Mode 由 `SET_CONTROL_MODE` 管理命令显式切换。上电默认模式为 `MOTION_MODE`。
 
-> **本固件：** 仅 `MOTION_MODE` 可运行。`SET_CONTROL_MODE` 设为速度/位置模式返回 `PARAMETER_OUT_OF_RANGE`，当前模式保持 `MOTION_MODE`。
+> **本固件：** 三模式均可运行。上电默认 `MOTION_MODE`。`SET_CONTROL_MODE` 在 `RUNNING` 下切换；`FAULT` 返回 `INVALID_STATE`。
 
 ---
 
@@ -211,7 +211,7 @@ Motion Command **没有额外 ACK**，`0x300 + ID` 即为它的反馈帧。一�
 
 ## 2.2 Velocity Mode Command
 
-> **本固件：未实现。** 收包后忽略，不执行、不返回 Motion Feedback。
+> **本固件：** 已实现。电压 PI，`e_v = v_des - v_act`，`u = Kp e_v + Ki ∫e_v dt`，输出限幅 `±CFG_V_LIMIT`。积分采用钳位抗饱和：`I := sat(Kp e + I) - Kp e`。`|v_des| > 100 rad/s` 或 Reserved 非 0 的帧视为无效。
 
 速度模式使用电机内部速度环，控制量为 4 Byte 目标速度。
 
@@ -260,7 +260,7 @@ Velocity Mode Command 没有额外 ACK。一次接收处理中存在多帧实时
 
 ## 2.3 Position Mode Command
 
-> **本固件：未实现。** 收包后忽略，不执行、不返回 Motion Feedback。
+> **本固件：** 已实现。位置外环 PID 生成 `v_ref`（限幅 `±MaximumVelocity`，且不超过 `100 rad/s`），再交给速度 PI 内环（使用 `VELOCITY_MODE` Gains）。位置 D 项为 `-Kd·v_act`（对测量微分，避免位置指令阶跃踢腿）。外环积分对 `v_ref` 限幅钳位；内环电压饱和时冻结外环积分，避免级联 windup。
 
 位置模式采用位置外环、速度内环。控制量为 4 Byte 目标位置和 4 Byte 最大速度。
 
@@ -363,7 +363,7 @@ Position = -2π                反向 1 圈
 
 # 4. Control Gains
 
-> **本固件：** 仅接受 `MOTION_MODE` Gains（Ki 必须为 0）。`VELOCITY_MODE` / `POSITION_MODE` 返回 `PARAMETER_OUT_OF_RANGE`，原参数不变。有效范围受 `config.h` 限制（Kp 0~500 pu/rad，Kd 0~5 pu·s/rad）。
+> **本固件：** 三组 Gains 均接受，分辨率按原文电压模式。MOTION 的 Ki、VELOCITY 的 Kd 必须为 0。有效范围见 `config.h`。ACK 不改变当前 Control Mode。
 
 根据 Control Mode 分别设置运控模式的 `Kp/Kd`、速度模式速度环的 `Kp/Ki`，以及位置模式位置外环的 `Kp/Ki/Kd`。
 
@@ -555,7 +555,7 @@ READY
 Result = INVALID_STATE
 ```
 
-> **本固件：** 无 `DISABLED`/`READY`。`RUNNING` 下设置 `MOTION_MODE` 返回 `OK`。设置 `VELOCITY_MODE`/`POSITION_MODE` 返回 `PARAMETER_OUT_OF_RANGE`（不是 `INVALID_STATE`）。`FAULT` 时返回 `INVALID_STATE`。无积分器可清。
+> **本固件：** 无 `DISABLED`/`READY`。`RUNNING` 下可切换 `MOTION`/`VELOCITY`/`POSITION`。切换后清零速度/位置积分，并清除实时目标有效标志（此时电压指令为 0），直到收到与新模式匹配的有效实时命令。`FAULT` 时返回 `INVALID_STATE`。
 
 切换成功后：
 
@@ -1099,7 +1099,7 @@ Temperature(°C) = Raw × 0.1
 
 # 17. Warning / Control Mode
 
-> **本固件：** Warning 各位填 0。`bit5~6` 回报当前 Control Mode（恒为 `MOTION_MODE`，除非将来扩展）。
+> **本固件：** Warning 各位填 0。`bit5~6` 回报当前 Control Mode。
 
 ```text
 Byte7
@@ -1196,7 +1196,7 @@ Result：
 | `SET_CONTROL_MODE` | **`Command ACK 0x280`** |
 | `GET_STATUS` | **`Status Response 0x380`** |
 
-> **本固件：** `0x140`/`0x1C0` 不回 Feedback。`ENABLE`/`DISABLE` 仍回 `0x280`，Result=`INVALID_COMMAND`。
+> **本固件：** `0x100`/`0x140`/`0x1C0` 均按当前模式回 Feedback。`ENABLE`/`DISABLE` 仍回 `0x280`，Result=`INVALID_COMMAND`。
 
 表中的实时控制命令应答表示正常的单帧处理结果；如果一次接收处理中积累了多帧实时控制命令，不要求逐帧返回 Motion Feedback，按照下述合并规则处理。
 
@@ -1246,7 +1246,7 @@ Result：
 
 当实时控制命令与 Control Gains、Management Command 同时积压时，驱动器先按接收顺序处理参数和管理命令，再根据处理后的 Motor State 和 Control Mode 校验并执行最新实时控制命令。这使 DISABLE、SET_CONTROL_MODE、故障处理等管理动作优先于实时控制输出。
 
-> **本固件：** 合并规则仅作用于 Motion `0x100`。`START_ENCODER_CALIBRATION` 结束后会清空 RX FIFO 并丢弃本次已解析的 Motion，避免校准期间积压的运控在结束后突然执行。
+> **本固件：** 合并规则作用于与当前 Control Mode 匹配的 Motion / Velocity / Position 帧。`SET_CONTROL_MODE` 会丢弃本轮中切换前已解析的实时帧。`START_ENCODER_CALIBRATION` 结束后会清空 RX FIFO 并丢弃本次已解析的实时帧。
 
 ## 19.2 非实时命令处理规则
 
@@ -1275,7 +1275,7 @@ Result：
 - 通信停止不会自动清零控制输出或进入 Fault，因此上位机正常停止控制时必须发送 DISABLE，并监控反馈超时作为通信异常提示。
 - 多电机系统应错开各电机请求的发送相位，避免所有电机在同一时刻集中发送命令和反馈。
 
-> **本固件：** 无 `DISABLE`。停止周期 Motion 后电机仍保持最后一帧目标。模式切换无需 `DISABLE → SET_CONTROL_MODE → ENABLE`，直接 `SET_CONTROL_MODE(MOTION)`（其它模式会被拒绝）。校准前应先停止 Motion 循环。
+> **本固件：** 无 `DISABLE`。停止周期实时命令后电机仍保持最后一帧目标。模式切换无需 `DISABLE → SET_CONTROL_MODE → ENABLE`：先停旧模式循环，发 `SET_CONTROL_MODE`，再发新模式 Gains（若未配置）和实时命令。校准前应先停止实时循环。
 
 ### 非实时请求
 
@@ -1393,4 +1393,4 @@ RUNNING
 > RUNNING
 > ```
 >
-> 速度/位置模式不可用。校准前先停止 Motion 循环。
+> 校准前先停止实时循环。速度模式先配 VELOCITY Gains 再 `SET_CONTROL_MODE`；位置模式还需再配 POSITION Gains。

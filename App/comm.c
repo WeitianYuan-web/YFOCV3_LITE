@@ -38,7 +38,16 @@ static uint8_t s_last_seq;
 static uint8_t s_have_cache;
 static uint32_t s_cache_id;
 static uint8_t s_cache_data[8];
-static uint8_t s_drop_pending_motion;
+static uint8_t s_drop_pending_rt;
+static uint8_t s_mode_cleared_rt;
+
+static uint32_t Comm_ReadU32Le(const uint8_t *p)
+{
+  return (uint32_t)p[0] |
+         ((uint32_t)p[1] << 8) |
+         ((uint32_t)p[2] << 16) |
+         ((uint32_t)p[3] << 24);
+}
 
 static uint16_t Comm_ReadU16Le(const uint8_t *p)
 {
@@ -160,7 +169,7 @@ static void Comm_SendStatus(uint8_t seq)
   uint8_t data[8] = {0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U};
   data[0] = s_state;
   Comm_WriteU16Le(&data[1], s_fault);
-  data[7] = (uint8_t)((s_ctrl_mode & 0x03U) << 5);
+  data[7] = (uint8_t)((Servo_GetCtrlMode() & 0x03U) << 5);
   Comm_CacheSend(CFG_CAN_STATUS_BASE + CFG_NODE_ID, COMM_CMD_GET_STATUS, seq, data);
 }
 
@@ -191,33 +200,100 @@ static uint8_t Comm_ParseMotion(const uint8_t *d, float *p, float *v, float *ff)
   return 1U;
 }
 
+static uint8_t Comm_ParseVelocity(const uint8_t *d, float *v)
+{
+  const float vel = (float)Comm_ReadI32Le(&d[0]) * CFG_VEL_LSB;
+
+  if (Comm_ReservedZero(d, 4U) == 0U)
+  {
+    return 0U;
+  }
+  if ((vel < CFG_VEL_CMD_MIN) || (vel > CFG_VEL_CMD_MAX))
+  {
+    return 0U;
+  }
+  *v = vel;
+  return 1U;
+}
+
+static uint8_t Comm_ParsePosition(const uint8_t *d, float *p, float *vmax)
+{
+  const float max_vel = (float)Comm_ReadU32Le(&d[4]) * CFG_VEL_LSB;
+
+  if (max_vel > CFG_VEL_CMD_MAX)
+  {
+    return 0U;
+  }
+  *p = (float)Comm_ReadI32Le(&d[0]) * CFG_POS_LSB;
+  *vmax = max_vel;
+  return 1U;
+}
+
 static void Comm_HandleGains(const uint8_t *d)
 {
   const uint8_t mode = d[0];
   const uint8_t seq = d[1];
-  const float kp = (float)Comm_ReadU16Le(&d[2]) * CFG_KP_LSB;
-  const float kd = (float)Comm_ReadU16Le(&d[6]) * CFG_KD_LSB;
+  const uint16_t kp_raw = Comm_ReadU16Le(&d[2]);
+  const uint16_t ki_raw = Comm_ReadU16Le(&d[4]);
+  const uint16_t kd_raw = Comm_ReadU16Le(&d[6]);
+  float kp;
+  float ki;
+  float kd;
 
   if (Comm_ReplayIfDup(COMM_CMD_SET_GAINS, seq) != 0U)
   {
     return;
   }
-  if (mode != COMM_MODE_MOTION)
+  if (mode > COMM_MODE_POSITION)
   {
     Comm_SendAck(COMM_CMD_SET_GAINS, seq, COMM_RES_OUT_OF_RANGE);
     return;
   }
-  if (Comm_ReadU16Le(&d[4]) != 0U)
+
+  if (mode == COMM_MODE_MOTION)
   {
-    Comm_SendAck(COMM_CMD_SET_GAINS, seq, COMM_RES_OUT_OF_RANGE);
-    return;
+    if (ki_raw != 0U)
+    {
+      Comm_SendAck(COMM_CMD_SET_GAINS, seq, COMM_RES_OUT_OF_RANGE);
+      return;
+    }
+    kp = (float)kp_raw * CFG_KP_LSB;
+    kd = (float)kd_raw * CFG_KD_LSB;
+    if ((kp < CFG_KP_MIN) || (kp > CFG_KP_MAX) || (kd < CFG_KD_MIN) || (kd > CFG_KD_MAX))
+    {
+      Comm_SendAck(COMM_CMD_SET_GAINS, seq, COMM_RES_OUT_OF_RANGE);
+      return;
+    }
+    Servo_SetGains(kp, kd);
   }
-  if ((kp < CFG_KP_MIN) || (kp > CFG_KP_MAX) || (kd < CFG_KD_MIN) || (kd > CFG_KD_MAX))
+  else if (mode == COMM_MODE_VELOCITY)
   {
-    Comm_SendAck(COMM_CMD_SET_GAINS, seq, COMM_RES_OUT_OF_RANGE);
-    return;
+    if (kd_raw != 0U)
+    {
+      Comm_SendAck(COMM_CMD_SET_GAINS, seq, COMM_RES_OUT_OF_RANGE);
+      return;
+    }
+    kp = (float)kp_raw * CFG_KP_VEL_LSB;
+    ki = (float)ki_raw * CFG_KI_VEL_LSB;
+    if ((kp > CFG_KP_VEL_MAX) || (ki > CFG_KI_VEL_MAX))
+    {
+      Comm_SendAck(COMM_CMD_SET_GAINS, seq, COMM_RES_OUT_OF_RANGE);
+      return;
+    }
+    Servo_SetVelocityGains(kp, ki);
   }
-  Servo_SetGains(kp, kd);
+  else
+  {
+    kp = (float)kp_raw * CFG_KP_POS_LSB;
+    ki = (float)ki_raw * CFG_KI_POS_LSB;
+    kd = (float)kd_raw * CFG_KD_POS_LSB;
+    if ((kp > CFG_KP_POS_MAX) || (ki > CFG_KI_POS_MAX) || (kd > CFG_KD_POS_MAX))
+    {
+      Comm_SendAck(COMM_CMD_SET_GAINS, seq, COMM_RES_OUT_OF_RANGE);
+      return;
+    }
+    Servo_SetPositionGains(kp, ki, kd);
+  }
   Comm_SendAck(COMM_CMD_SET_GAINS, seq, COMM_RES_OK);
 }
 
@@ -275,17 +351,19 @@ static void Comm_HandleMgmt(const uint8_t *d)
         Comm_SendAck(cmd, seq, COMM_RES_OUT_OF_RANGE);
         break;
       }
-      if (d[2] != COMM_MODE_MOTION)
-      {
-        Comm_SendAck(cmd, seq, COMM_RES_OUT_OF_RANGE);
-        break;
-      }
       if (s_state == COMM_STATE_FAULT)
       {
         Comm_SendAck(cmd, seq, COMM_RES_INVALID_STATE);
         break;
       }
-      s_ctrl_mode = COMM_MODE_MOTION;
+      if (s_state == COMM_STATE_CALIBRATING)
+      {
+        Comm_SendAck(cmd, seq, COMM_RES_BUSY);
+        break;
+      }
+      s_ctrl_mode = d[2];
+      Servo_SetCtrlMode(d[2]);
+      s_mode_cleared_rt = 1U;
       Comm_SendAck(cmd, seq, COMM_RES_OK);
       break;
 
@@ -327,7 +405,7 @@ static void Comm_HandleMgmt(const uint8_t *d)
         s_fault = COMM_FAULT_CALIBRATION;
       }
       Comm_FlushRx();
-      s_drop_pending_motion = 1U;
+      s_drop_pending_rt = 1U;
       break;
 
     default:
@@ -340,7 +418,8 @@ void Comm_Init(uint8_t cali_ok)
 {
   s_ctrl_mode = COMM_MODE_MOTION;
   s_have_cache = 0U;
-  s_drop_pending_motion = 0U;
+  s_drop_pending_rt = 0U;
+  s_mode_cleared_rt = 0U;
   if (cali_ok != 0U)
   {
     s_state = COMM_STATE_RUNNING;
@@ -356,10 +435,11 @@ void Comm_Init(uint8_t cali_ok)
 void Comm_Process(void)
 {
   CanFrame_t frame;
-  uint8_t have_motion = 0U;
+  uint8_t have_rt = 0U;
   float p_set = 0.0f;
   float v_set = 0.0f;
   float t_ff = 0.0f;
+  float v_max = 0.0f;
   const uint32_t nid = CFG_NODE_ID;
 
   while (Can_PopRx(&frame) != 0U)
@@ -374,7 +454,27 @@ void Comm_Process(void)
         p_set = p;
         v_set = v;
         t_ff = ff;
-        have_motion = 1U;
+        have_rt = COMM_MODE_MOTION + 1U;
+      }
+    }
+    else if (frame.id == (CFG_CAN_VEL_BASE + nid))
+    {
+      float v;
+      if ((s_ctrl_mode == COMM_MODE_VELOCITY) && (Comm_ParseVelocity(frame.data, &v) != 0U))
+      {
+        v_set = v;
+        have_rt = COMM_MODE_VELOCITY + 1U;
+      }
+    }
+    else if (frame.id == (CFG_CAN_POS_BASE + nid))
+    {
+      float p;
+      float vmax;
+      if ((s_ctrl_mode == COMM_MODE_POSITION) && (Comm_ParsePosition(frame.data, &p, &vmax) != 0U))
+      {
+        p_set = p;
+        v_max = vmax;
+        have_rt = COMM_MODE_POSITION + 1U;
       }
     }
     else if (frame.id == (CFG_CAN_GAINS_BASE + nid))
@@ -384,15 +484,20 @@ void Comm_Process(void)
     else if (frame.id == (CFG_CAN_MGMT_BASE + nid))
     {
       Comm_HandleMgmt(frame.data);
+      if (s_mode_cleared_rt != 0U)
+      {
+        s_mode_cleared_rt = 0U;
+        have_rt = 0U;
+      }
     }
   }
 
-  if (s_drop_pending_motion != 0U)
+  if (s_drop_pending_rt != 0U)
   {
-    s_drop_pending_motion = 0U;
-    have_motion = 0U;
+    s_drop_pending_rt = 0U;
+    have_rt = 0U;
   }
-  if (have_motion == 0U)
+  if (have_rt == 0U)
   {
     return;
   }
@@ -404,11 +509,18 @@ void Comm_Process(void)
   {
     return;
   }
-  if (s_ctrl_mode != COMM_MODE_MOTION)
-  {
-    return;
-  }
 
-  Servo_SetMotion(p_set, v_set, t_ff);
+  if (have_rt == (COMM_MODE_MOTION + 1U))
+  {
+    Servo_SetMotion(p_set, v_set, t_ff);
+  }
+  else if (have_rt == (COMM_MODE_VELOCITY + 1U))
+  {
+    Servo_SetVelocityCmd(v_set);
+  }
+  else
+  {
+    Servo_SetPositionCmd(p_set, v_max);
+  }
   Comm_SendFeedback();
 }

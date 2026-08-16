@@ -29,14 +29,16 @@ class CanWorker(threading.Thread):
         self._stop = threading.Event()
         self._cyclic = False
         self._period = 0.005
-        self._motion_fn = lambda: proto.pack_motion(0.0, 0.0, 0.0)
+        self._cyclic_id = 0
+        self._payload_fn = lambda: proto.pack_motion(0.0, 0.0, 0.0)
         self._lock = threading.Lock()
 
-    def set_cyclic(self, enabled: bool, rate_hz: float, motion_fn) -> None:
+    def set_cyclic(self, enabled: bool, rate_hz: float, can_id: int, payload_fn) -> None:
         with self._lock:
             self._cyclic = enabled
             self._period = 1.0 / max(1.0, float(rate_hz))
-            self._motion_fn = motion_fn
+            self._cyclic_id = int(can_id)
+            self._payload_fn = payload_fn
 
     def send(self, can_id: int, data: bytes) -> None:
         self.tx_q.put((can_id, data))
@@ -60,13 +62,14 @@ class CanWorker(threading.Thread):
             with self._lock:
                 cyclic = self._cyclic
                 period = self._period
-                motion_fn = self._motion_fn
+                cyclic_id = self._cyclic_id
+                payload_fn = self._payload_fn
             if cyclic and (now - last_tx) >= period:
                 try:
                     self.bus.send(
                         can.Message(
-                            arbitration_id=self.ids["motion"],
-                            data=motion_fn(),
+                            arbitration_id=cyclic_id,
+                            data=payload_fn(),
                             is_extended_id=False,
                         )
                     )
@@ -104,6 +107,8 @@ class HostGui:
         self.fb_count = 0
         self.fb_t0 = time.monotonic()
         self._snap = (0.0, 0.0, 0.0)
+        self._vel_snap = 0.0
+        self._pos_snap = (0.0, 10.0)
         self._snap_lock = threading.Lock()
         self._build()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -200,27 +205,40 @@ class HostGui:
         tab = ttk.Frame(nb)
         nb.add(tab, text="Velocity")
         self.var_v_vel = tk.StringVar(value="0.0")
+        self.var_v_rate = tk.StringVar(value="200")
         self._entry_row(tab, 0, "目标速度 rad/s", self.var_v_vel)
-        ttk.Button(tab, text="发送 Velocity Command", command=self.send_velocity).grid(
-            row=1, column=0, columnspan=2, pady=8, sticky="w", padx=4
-        )
-        ttk.Label(tab, text="当前固件未实现速度模式，驱动器会忽略该帧。").grid(
-            row=2, column=0, columnspan=2, sticky="w", padx=4
-        )
+        self._entry_row(tab, 1, "循环频率 Hz", self.var_v_rate)
+        btns = ttk.Frame(tab)
+        btns.grid(row=2, column=0, columnspan=2, pady=8, sticky="w", padx=4)
+        ttk.Button(btns, text="发送一次", command=self.send_velocity).pack(side="left", padx=4)
+        ttk.Button(btns, text="开始循环", command=self.start_cyclic_vel).pack(side="left", padx=4)
+        ttk.Button(btns, text="停止循环", command=self.stop_cyclic).pack(side="left", padx=4)
+        ttk.Label(
+            tab,
+            text="先 SET_CONTROL_MODE=VELOCITY，并设置 VELOCITY Gains（Kp/Ki，Kd=0）。\n"
+            "速度环是电压 PI，饱和时积分钳位抗饱和。停止循环后仍保持最后一帧目标。",
+        ).grid(row=3, column=0, columnspan=2, sticky="w", padx=4)
 
     def _tab_pos(self, nb: ttk.Notebook) -> None:
         tab = ttk.Frame(nb)
         nb.add(tab, text="Position")
         self.var_p_pos = tk.StringVar(value="0.0")
         self.var_p_maxv = tk.StringVar(value="10.0")
+        self.var_p_rate = tk.StringVar(value="200")
         self._entry_row(tab, 0, "目标位置 rad", self.var_p_pos)
         self._entry_row(tab, 1, "最大速度 rad/s", self.var_p_maxv)
-        ttk.Button(tab, text="发送 Position Command", command=self.send_position).grid(
-            row=2, column=0, columnspan=2, pady=8, sticky="w", padx=4
-        )
-        ttk.Label(tab, text="当前固件未实现位置模式，驱动器会忽略该帧。").grid(
-            row=3, column=0, columnspan=2, sticky="w", padx=4
-        )
+        self._entry_row(tab, 2, "循环频率 Hz", self.var_p_rate)
+        btns = ttk.Frame(tab)
+        btns.grid(row=3, column=0, columnspan=2, pady=8, sticky="w", padx=4)
+        ttk.Button(btns, text="发送一次", command=self.send_position).pack(side="left", padx=4)
+        ttk.Button(btns, text="开始循环", command=self.start_cyclic_pos).pack(side="left", padx=4)
+        ttk.Button(btns, text="停止循环", command=self.stop_cyclic).pack(side="left", padx=4)
+        ttk.Button(btns, text="用反馈位置填入", command=self.fill_pos_cmd_from_fb).pack(side="left", padx=4)
+        ttk.Label(
+            tab,
+            text="先设 VELOCITY Gains（内环 PI）和 POSITION Gains（外环 PID），再 SET_CONTROL_MODE=POSITION。\n"
+            "位置 D 用 -Kd·v（对测量微分，避免指令阶跃踢腿）。外环积分对 vmax 钳位；内环饱和时冻结外环积分。",
+        ).grid(row=4, column=0, columnspan=2, sticky="w", padx=4)
 
     def _tab_gains(self, nb: ttk.Notebook) -> None:
         tab = ttk.Frame(nb)
@@ -245,8 +263,8 @@ class HostGui:
         )
         ttk.Label(
             tab,
-            text="MOTION：Kp/Kd，Ki 必须为 0（当前固件只接受这一组）。\n"
-            "VELOCITY：Kp/Ki，Kd=0。POSITION：Kp/Ki/Kd。",
+            text="MOTION：Kp/Kd，Ki 必须为 0。\n"
+            "VELOCITY：Kp/Ki（电压 PI），Kd 必须为 0。POSITION：位置外环 Kp/Ki/Kd；内环用 VELOCITY 那组 PI。",
         ).grid(row=5, column=0, columnspan=2, sticky="w", padx=4)
 
     def _tab_mgmt(self, nb: ttk.Notebook) -> None:
@@ -277,10 +295,10 @@ class HostGui:
         ttk.Button(mode_row, text="发送", command=self.send_set_mode).pack(side="left", padx=6)
         ttk.Label(
             tab,
-            text="当前固件：SET_ZERO / GET_STATUS / SET_CONTROL_MODE(MOTION) / START_CALI 可用。\n"
+            text="上电默认 MOTION。SET_CONTROL_MODE 可在 RUNNING 下切换三模式；切换后清积分，需再发对应实时命令。\n"
             "START_CALI 会先 ACK(CALIBRATING)，再约 50 ms 上报 0x3C0；成功后直接回 RUNNING。\n"
-            "失败后需 CLEAR_FAULT 再重试。ENABLE/DISABLE 与速度/位置模式仍会失败或被忽略。\n"
-            "校准期间电机会开环转动，请先停掉 Motion 循环发送。",
+            "失败后需 CLEAR_FAULT 再重试。ENABLE/DISABLE 仍返回 INVALID_COMMAND。\n"
+            "校准期间电机会开环转动，请先停掉实时循环发送。",
         ).grid(row=2, column=0, sticky="w", padx=4, pady=8)
 
     def _log(self, text: str) -> None:
@@ -322,7 +340,7 @@ class HostGui:
 
     def disconnect(self) -> None:
         if self.worker is not None:
-            self.worker.set_cyclic(False, 1.0, lambda: proto.pack_motion(0.0, 0.0, 0.0))
+            self.worker.set_cyclic(False, 1.0, 0, lambda: proto.pack_motion(0.0, 0.0, 0.0))
             self.worker.stop()
             self.worker.join(timeout=0.5)
             self.worker = None
@@ -360,10 +378,31 @@ class HostGui:
             self._snap = (pos, vel, ff)
         return proto.pack_motion(pos, vel, ff)
 
+    def _refresh_vel_pos_snap(self) -> None:
+        try:
+            vel = self._f(self.var_v_vel)
+            ppos = self._f(self.var_p_pos)
+            pmax = self._f(self.var_p_maxv)
+        except ValueError:
+            return
+        with self._snap_lock:
+            self._vel_snap = vel
+            self._pos_snap = (ppos, pmax)
+
     def _motion_payload(self) -> bytes:
         with self._snap_lock:
             pos, vel, ff = self._snap
         return proto.pack_motion(pos, vel, ff)
+
+    def _vel_payload(self) -> bytes:
+        with self._snap_lock:
+            vel = self._vel_snap
+        return proto.pack_velocity(vel)
+
+    def _pos_payload(self) -> bytes:
+        with self._snap_lock:
+            pos, maxv = self._pos_snap
+        return proto.pack_position(pos, maxv)
 
     def start_cyclic(self) -> None:
         w = self._need_worker()
@@ -375,20 +414,58 @@ class HostGui:
         except ValueError:
             messagebox.showerror("参数错误", "频率和 Motion 参数必须是数字")
             return
-        w.set_cyclic(True, rate, self._motion_payload)
+        w.set_cyclic(True, rate, w.ids["motion"], self._motion_payload)
         self.fb_count = 0
         self.fb_t0 = time.monotonic()
         self._log(f"cyclic Motion {rate:.1f} Hz")
 
+    def start_cyclic_vel(self) -> None:
+        w = self._need_worker()
+        if w is None:
+            return
+        try:
+            rate = float(self.var_v_rate.get())
+            vel = self._f(self.var_v_vel)
+        except ValueError:
+            messagebox.showerror("参数错误", "频率和速度必须是数字")
+            return
+        self._refresh_vel_pos_snap()
+        w.set_cyclic(True, rate, w.ids["vel"], self._vel_payload)
+        self.fb_count = 0
+        self.fb_t0 = time.monotonic()
+        self._log(f"cyclic Velocity {rate:.1f} Hz vel={vel}")
+
+    def start_cyclic_pos(self) -> None:
+        w = self._need_worker()
+        if w is None:
+            return
+        try:
+            rate = float(self.var_p_rate.get())
+            pos = self._f(self.var_p_pos)
+            maxv = self._f(self.var_p_maxv)
+        except ValueError:
+            messagebox.showerror("参数错误", "频率和位置参数必须是数字")
+            return
+        self._refresh_vel_pos_snap()
+        w.set_cyclic(True, rate, w.ids["pos"], self._pos_payload)
+        self.fb_count = 0
+        self.fb_t0 = time.monotonic()
+        self._log(f"cyclic Position {rate:.1f} Hz pos={pos} max_vel={maxv}")
+
     def stop_cyclic(self) -> None:
         if self.worker is not None:
-            self.worker.set_cyclic(False, 1.0, self._motion_payload)
-        self._log("cyclic Motion stopped")
+            self.worker.set_cyclic(False, 1.0, 0, self._motion_payload)
+        self._log("cyclic stopped")
 
     def fill_pos_from_fb(self) -> None:
         text = self.var_fb_pos.get()
         if text not in ("—", ""):
             self.var_m_pos.set(text)
+
+    def fill_pos_cmd_from_fb(self) -> None:
+        text = self.var_fb_pos.get()
+        if text not in ("—", ""):
+            self.var_p_pos.set(text)
 
     def send_velocity(self) -> None:
         w = self._need_worker()
@@ -452,6 +529,7 @@ class HostGui:
             self._refresh_snap()
         except ValueError:
             pass
+        self._refresh_vel_pos_snap()
         try:
             while True:
                 kind, payload = self.rx_q.get_nowait()

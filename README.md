@@ -82,10 +82,14 @@ PWM 20 kHz 中心对齐；TIM6 4 kHz 运控；无电流采样。
 
 ## 运控
 
-4 kHz：
+4 kHz 按当前 Control Mode：
 
 ```text
-t_ref = Kd*(v_set - v_act) + Kp*(p_set - p_act) + Voltage_ff
+MOTION:   t_ref = Kd*(v_set - v_act) + Kp*(p_set - p_act) + Voltage_ff
+VELOCITY: t_ref = Kp_v*e_v + Ki_v*∫e_v dt          （积分钳位到 ±V_LIMIT）
+POSITION: v_ref = Kp_p*e_p + Ki_p*∫e_p dt - Kd_p*v_act
+          v_ref = clamp(v_ref, ±vmax)
+          内环同 VELOCITY PI（内环饱和时冻结外环积分）
 t_ref = clamp(t_ref, -V_LIMIT, +V_LIMIT)
 ```
 
@@ -95,7 +99,7 @@ t_ref = clamp(t_ref, -V_LIMIT, +V_LIMIT)
 
 速度：二阶 Type-2 PLL（`CFG_VEL_PLL_HZ`）。CRC 失败的帧丢弃，PLL 按上次速度外推。
 
-上电校准或加载参数后直接进入运控：PWM 打开，目标位置设为当前角。上位机发 `SET_GAINS` 后即可发 Motion Command。反馈只在有效 Motion Command 之后回 `0x300+ID`。
+上电默认 `MOTION_MODE`。校准或加载后 PWM 打开，目标位置设为当前角。`SET_CONTROL_MODE` 切换后积分清零，需再发对应模式的实时命令。反馈在有效实时命令之后回 `0x300+ID`。
 
 ## CAN 协议
 
@@ -103,10 +107,11 @@ Motor CAN Protocol V1.0，Classic CAN 1 Mbps，**小端**，Motor ID = 1~63（�
 
 | CAN ID | 方向 | 本固件 |
 |------|------|------|
-| `0x100+ID` | 主机→电机 | Motion Command（已接入） |
-| `0x180+ID` | 主机→电机 | Control Gains，仅 `MOTION_MODE`（已接入） |
-| `0x200+ID` | 主机→电机 | Management：SET_ZERO / CLEAR_FAULT / START_CALI / GET_STATUS / SET_CONTROL_MODE(motion) |
-| `0x140+ID` / `0x1C0+ID` | 主机→电机 | 速度/位置模式：收包但不执行 |
+| `0x100+ID` | 主机→电机 | Motion Command |
+| `0x140+ID` | 主机→电机 | Velocity Mode Command |
+| `0x180+ID` | 主机→电机 | Control Gains（MOTION / VELOCITY / POSITION 三组） |
+| `0x1C0+ID` | 主机→电机 | Position Mode Command |
+| `0x200+ID` | 主机→电机 | Management：SET_ZERO / CLEAR_FAULT / START_CALI / GET_STATUS / SET_CONTROL_MODE |
 | `0x280+ID` | 电机→主机 | Command ACK |
 | `0x300+ID` | 电机→主机 | Motion Feedback |
 | `0x380+ID` | 电机→主机 | Status Response（母线电压/温度填 0） |
@@ -120,9 +125,11 @@ Motion `0x100+ID`：
 | 4-5 | 目标速度 | `int16`，`0.1 rad/s/LSB` |
 | 6-7 | Voltage FF | `uint16`，`raw/65535` → 0~1 |
 
-Gains `0x180+ID`：Byte0=`0x00`（MOTION），Byte1=Sequence，Byte2-3=Kp（`0.01 pu/rad`），Byte4-5=Ki 必须为 0，Byte6-7=Kd（`0.001 pu·s/rad`）。应答 `0x280`，Command=`0x20`。
+Gains `0x180+ID`：Byte0=Control Mode，Byte1=Sequence。MOTION：Kp `0.01 pu/rad`，Ki=0，Kd `0.001 pu·s/rad`。VELOCITY：Kp `0.001 pu/(rad/s)`，Ki `0.001 pu/rad`，Kd=0。POSITION：外环 Kp `0.01 s⁻¹`，Ki `0.001 s⁻²`，Kd `0.001`。位置内环使用 VELOCITY 那组 PI。
 
-`START_ENCODER_CALIBRATION`（`0x200+ID`，Byte0=`0x05`）：因本固件无 ENABLE/DISABLE，**RUNNING 下可直接启动**（协议原文要求 DISABLED）。先 ACK `OK` 且 State=`CALIBRATING`，随后 `0x3C0+ID` 约 50 ms 上报进度。成功后回到 **RUNNING**（协议原文是 DISABLED）。失败进入 FAULT + `CALIBRATION_FAULT`，需 `CLEAR_FAULT` 后再发校准。上电无 NV 时同样走这条流程并上报，Sequence=0，没有 Command ACK。校准过程阻塞主循环数秒，期间 Motion 会被丢弃。
+`SET_CONTROL_MODE` 可在 RUNNING 下切换三模式；切换后清积分，电压为 0 直到收到新模式的有效实时命令。上电默认 MOTION。
+
+`START_ENCODER_CALIBRATION`（`0x200+ID`，Byte0=`0x05`）：因本固件无 ENABLE/DISABLE，**RUNNING 下可直接启动**（协议原文要求 DISABLED）。先 ACK `OK` 且 State=`CALIBRATING`，随后 `0x3C0+ID` 约 50 ms 上报进度。成功后回到 **RUNNING**（协议原文是 DISABLED）。失败进入 FAULT + `CALIBRATION_FAULT`，需 `CLEAR_FAULT` 后再发校准。上电无 NV 时同样走这条流程并上报，Sequence=0，没有 Command ACK。校准过程阻塞主循环数秒，期间实时命令会被丢弃。
 
 反馈 `0x300+ID`：
 
@@ -146,7 +153,7 @@ pip install -r requirements.txt
 python servo_gui.py
 ```
 
-GUI 可发送协议内全部命令。Motion 支持单次或按设定频率循环发送，并刷新位置/速度/电压反馈。当前固件已接入运控、MOTION Gains、SET_ZERO、GET_STATUS、START_CALI；速度/位置模式与 ENABLE/DISABLE 仍会失败或被忽略。校准前请先停止 Motion 循环。
+GUI 可发送协议内全部命令。Motion / Velocity / Position 均支持单次或循环发送，并刷新反馈。ENABLE/DISABLE 仍会返回 `INVALID_COMMAND`。校准前请先停止实时循环。
 
 Windows 激活 venv 后请用 `python`，不要用 `python3`：系统里的 `python3` 往往是 Microsoft Store 占位程序，会立刻退出且不报错。
 
