@@ -7,6 +7,8 @@
 #include "pwm.h"
 #include "stm32g4xx.h"
 
+#include <math.h>
+
 static Foc_Encoder_t s_enc;
 static volatile ServoMode_t s_mode = SERVO_IDLE;
 static volatile uint8_t s_ctrl_mode = SERVO_CTRL_MOTION;
@@ -47,16 +49,26 @@ static void Servo_ClearLoopState(void)
   s_cmd_valid = 0U;
 }
 
-static float Servo_PiAntiWindup(float *i, float err, float kp, float ki, float dt, float lim)
+static float Servo_PiLimited(float *i, float err, float kp, float ki, float dt, float lim)
 {
-  float unsat;
-  float sat;
-
   *i += ki * err * dt;
-  unsat = (kp * err) + *i;
-  sat = Foc_Clamp(unsat, -lim, lim);
-  *i = sat - (kp * err);
-  return sat;
+  *i = Foc_Clamp(*i, -lim, lim);
+  return Foc_Clamp((kp * err) + *i, -lim, lim);
+}
+
+static float Servo_PosSpeedLimit(float ep, float vmax, float acc)
+{
+  float lim = vmax;
+
+  if ((acc > 0.0f) && (lim > 0.0f))
+  {
+    const float v_dec = sqrtf(2.0f * acc * fabsf(ep));
+    if (v_dec < lim)
+    {
+      lim = v_dec;
+    }
+  }
+  return lim;
 }
 
 static float Servo_Slew(float current, float target, float max_step)
@@ -187,16 +199,21 @@ void Servo_OnCtrlIsr(void)
   }
   else if (s_ctrl_mode == SERVO_CTRL_VELOCITY)
   {
-    s_t_ref = Servo_PiAntiWindup(&s_vel_i, s_v_set - v_act, s_vel_kp, s_vel_ki, dt, vlim);
+    s_t_ref = Servo_PiLimited(&s_vel_i, s_v_set - v_act, s_vel_kp, s_vel_ki, dt, vlim);
   }
   else
   {
     const float ep = s_p_set - p_act;
     const float d_term = -(s_pos_kd * v_act);
     const float vmax = s_v_max;
+    const float v_lim = Servo_PosSpeedLimit(ep, vmax, CFG_POS_ACC_DEFAULT);
+    const float v_prof = (ep >= 0.0f) ? v_lim : -v_lim;
+    const float settle = CFG_POS_SETTLE_RAD;
+    float v_pid;
     float v_ref;
     float inner_unsat;
     float pos_i_old;
+    float w;
 
     pos_i_old = s_pos_i;
     if (vmax <= 0.0f)
@@ -204,20 +221,39 @@ void Servo_OnCtrlIsr(void)
       s_pos_i = 0.0f;
       v_ref = 0.0f;
     }
-    else if (s_pos_ki <= 0.0f)
-    {
-      s_pos_i = 0.0f;
-      v_ref = Foc_Clamp((s_pos_kp * ep) + d_term, -vmax, vmax);
-    }
     else
     {
-      s_pos_i += s_pos_ki * ep * dt;
-      v_ref = Foc_Clamp((s_pos_kp * ep) + s_pos_i + d_term, -vmax, vmax);
-      s_pos_i = v_ref - (s_pos_kp * ep) - d_term;
+      if (s_pos_ki <= 0.0f)
+      {
+        s_pos_i = 0.0f;
+        v_pid = (s_pos_kp * ep) + d_term;
+      }
+      else
+      {
+        s_pos_i += s_pos_ki * ep * dt;
+        s_pos_i = Foc_Clamp(s_pos_i, -vmax, vmax);
+        v_pid = (s_pos_kp * ep) + s_pos_i + d_term;
+      }
+      v_pid = Foc_Clamp(v_pid, -vmax, vmax);
+      if (fabsf(ep) >= settle)
+      {
+        w = 1.0f;
+      }
+      else if (settle <= 0.0f)
+      {
+        w = 0.0f;
+      }
+      else
+      {
+        w = fabsf(ep) / settle;
+      }
+      /* Far: follow vmax / sqrt(2 a |ep|). Near: hand off to PID. */
+      v_ref = (w * v_prof) + ((1.0f - w) * v_pid);
+      v_ref = Foc_Clamp(v_ref, -vmax, vmax);
     }
 
     inner_unsat = (s_vel_kp * (v_ref - v_act)) + s_vel_i + (s_vel_ki * (v_ref - v_act) * dt);
-    s_t_ref = Servo_PiAntiWindup(&s_vel_i, v_ref - v_act, s_vel_kp, s_vel_ki, dt, vlim);
+    s_t_ref = Servo_PiLimited(&s_vel_i, v_ref - v_act, s_vel_kp, s_vel_ki, dt, vlim);
     if ((inner_unsat > vlim) || (inner_unsat < -vlim))
     {
       s_pos_i = pos_i_old;

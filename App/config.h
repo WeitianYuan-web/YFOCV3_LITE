@@ -47,6 +47,8 @@ extern "C" {
 #define CFG_VEL_CMD_MIN             (-100.0f)
 #define CFG_VEL_CMD_MAX             (100.0f)
 #define CFG_POS_VMAX_DEFAULT        (100.0f)
+#define CFG_POS_ACC_DEFAULT         (80.0f)    /* rad/s^2; v_lim = min(vmax, sqrt(2 a |ep|)) */
+#define CFG_POS_SETTLE_RAD          (1.0f)     /* blend to PID inside this error */
 #define CFG_VEL_KP_DEFAULT          (0.01f)    /* pu/(rad/s) */
 #define CFG_VEL_KI_DEFAULT          (0.3f)    /* pu/rad */
 #define CFG_POS_KP_DEFAULT          (3.0f)    /* 1/s */
