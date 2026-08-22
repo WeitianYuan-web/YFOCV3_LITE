@@ -3,6 +3,7 @@
 #include "cali.h"
 #include "can.h"
 #include "config.h"
+#include "foc_math.h"
 #include "pwm.h"
 #include "servo.h"
 
@@ -190,12 +191,8 @@ static uint8_t Comm_ParseMotion(const uint8_t *d, float *p, float *v, float *ff)
 {
   const float vel = (float)((int16_t)Comm_ReadU16Le(&d[4])) * CFG_VEL_LSB;
 
-  if ((vel < CFG_VEL_CMD_MIN) || (vel > CFG_VEL_CMD_MAX))
-  {
-    return 0U;
-  }
   *p = (float)Comm_ReadI32Le(&d[0]) * CFG_POS_LSB;
-  *v = vel;
+  *v = Foc_Clamp(vel, CFG_VEL_CMD_MIN, CFG_VEL_CMD_MAX);
   *ff = (float)Comm_ReadU16Le(&d[6]) / 65535.0f;
   return 1U;
 }
@@ -208,11 +205,7 @@ static uint8_t Comm_ParseVelocity(const uint8_t *d, float *v)
   {
     return 0U;
   }
-  if ((vel < CFG_VEL_CMD_MIN) || (vel > CFG_VEL_CMD_MAX))
-  {
-    return 0U;
-  }
-  *v = vel;
+  *v = Foc_Clamp(vel, CFG_VEL_CMD_MIN, CFG_VEL_CMD_MAX);
   return 1U;
 }
 
@@ -220,12 +213,8 @@ static uint8_t Comm_ParsePosition(const uint8_t *d, float *p, float *vmax)
 {
   const float max_vel = (float)Comm_ReadU32Le(&d[4]) * CFG_VEL_LSB;
 
-  if (max_vel > CFG_VEL_CMD_MAX)
-  {
-    return 0U;
-  }
   *p = (float)Comm_ReadI32Le(&d[0]) * CFG_POS_LSB;
-  *vmax = max_vel;
+  *vmax = Foc_Clamp(max_vel, 0.0f, CFG_VEL_CMD_MAX);
   return 1U;
 }
 

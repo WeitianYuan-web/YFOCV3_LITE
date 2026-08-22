@@ -165,7 +165,7 @@ Raw = 65535   → VoltageFF = 1.0
 
 其实际电压由固件的母线电压、调制方式和电压限幅决定。主机必须根据目标固件的输出模式编码 Byte6~7，不能将转矩模式的 `int16` 数值直接用于电压模式。
 
-> **本固件：** 固定电压模式。`VoltageFF` 按上表 `uint16 / 65535`。速度目标超出 `±100 rad/s` 的 Motion 帧视为无效：不执行、不覆盖上一帧、不回 Feedback。电压指令再限幅 `CFG_V_LIMIT`（默认 0.4 pu）。
+> **本固件：** 固定电压模式。`VoltageFF` 按上表 `uint16 / 65535`。速度按协议 `int16 × 0.1 rad/s` 接收（约 `±3276.7`），超出则钳位，仍执行并回 Feedback。电压指令再限幅 `CFG_V_LIMIT`。
 
 转矩模式控制律：
 
@@ -211,7 +211,7 @@ Motion Command **没有额外 ACK**，`0x300 + ID` 即为它的反馈帧。一�
 
 ## 2.2 Velocity Mode Command
 
-> **本固件：** 已实现。电压 PI，`e_v = v_des - v_act`，`u = Kp e_v + Ki ∫e_v dt`，输出限幅 `±CFG_V_LIMIT`。积分采用钳位抗饱和：`I := sat(Kp e + I) - Kp e`。`|v_des| > 100 rad/s` 或 Reserved 非 0 的帧视为无效。
+> **本固件：** 已实现。电压 PI，`e_v = v_des - v_act`，`u = Kp e_v + Ki ∫e_v dt`，输出限幅 `±CFG_V_LIMIT`。积分钳位到 `±V_LIMIT`。速度超出协议范围则钳位后仍执行；Reserved 非 0 的帧视为无效。
 
 速度模式使用电机内部速度环，控制量为 4 Byte 目标速度。
 
@@ -260,7 +260,7 @@ Velocity Mode Command 没有额外 ACK。一次接收处理中存在多帧实时
 
 ## 2.3 Position Mode Command
 
-> **本固件：** 已实现。位置外环 PID 生成 `v_ref`（限幅 `±MaximumVelocity`，且不超过 `100 rad/s`），再交给速度 PI 内环（使用 `VELOCITY_MODE` Gains）。位置 D 项为 `-Kd·v_act`（对测量微分，避免位置指令阶跃踢腿）。外环积分对 `v_ref` 限幅钳位；内环电压饱和时冻结外环积分，避免级联 windup。
+> **本固件：** 已实现。位置外环 PID 生成 `v_ref`（限幅 `±MaximumVelocity`，且不超过协议速度上限约 `3276.7 rad/s`），再交给速度 PI 内环（使用 `VELOCITY_MODE` Gains）。位置 D 项为 `-Kd·v_act`。外环积分对 `v_ref` 限幅钳位；内环电压饱和时冻结外环积分。
 
 位置模式采用位置外环、速度内环。控制量为 4 Byte 目标位置和 4 Byte 最大速度。
 

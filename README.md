@@ -97,7 +97,7 @@ t_ref = clamp(t_ref, -V_LIMIT, +V_LIMIT)
 
 20 kHz：`q = closed_loop_dir * t_ref`，`d = 0`，逆 Park + SVPWM。
 
-速度：二阶 Type-2 PLL（`CFG_VEL_PLL_HZ`）。CRC 失败的帧丢弃，PLL 按上次速度外推。
+速度：校准后电角度 20 kHz 差分，再过 500 Hz 二阶 Butterworth（`CFG_VEL_LPF_HZ`），输出机械角速度。CRC 失败的帧丢弃，按上次速度外推电角度。
 
 上电默认 `MOTION_MODE`。校准或加载后 PWM 打开，目标位置设为当前角。`SET_CONTROL_MODE` 切换后积分清零，需再发对应模式的实时命令。反馈在有效实时命令之后回 `0x300+ID`。
 

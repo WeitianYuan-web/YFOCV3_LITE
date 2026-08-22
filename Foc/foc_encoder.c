@@ -1,20 +1,69 @@
 #include "foc_encoder.h"
 
+#define FOC_VEL_LPF_SQRT2  (1.41421356237f)
+
+static void Foc_EncoderInitVelLpf(Foc_Encoder_t *encoder, float sample_hz, float fc_hz)
+{
+  const float T = 1.0f / sample_hz;
+  const float w = FOC_TWO_PI * fc_hz;
+  const float K = 2.0f / T;
+  const float w2 = w * w;
+  const float a0 = (K * K) + (FOC_VEL_LPF_SQRT2 * K * w) + w2;
+
+  encoder->lpf_b0 = w2 / a0;
+  encoder->lpf_b1 = (2.0f * w2) / a0;
+  encoder->lpf_b2 = encoder->lpf_b0;
+  encoder->lpf_a1 = ((-2.0f * K * K) + (2.0f * w2)) / a0;
+  encoder->lpf_a2 = ((K * K) - (FOC_VEL_LPF_SQRT2 * K * w) + w2) / a0;
+}
+
+static void Foc_EncoderClearVelLpf(Foc_Encoder_t *encoder)
+{
+  encoder->lpf_x1 = 0.0f;
+  encoder->lpf_x2 = 0.0f;
+  encoder->lpf_y1 = 0.0f;
+  encoder->lpf_y2 = 0.0f;
+}
+
+static float Foc_EncoderLpfStep(Foc_Encoder_t *encoder, float x)
+{
+  const float y = (encoder->lpf_b0 * x)
+                + (encoder->lpf_b1 * encoder->lpf_x1)
+                + (encoder->lpf_b2 * encoder->lpf_x2)
+                - (encoder->lpf_a1 * encoder->lpf_y1)
+                - (encoder->lpf_a2 * encoder->lpf_y2);
+
+  encoder->lpf_x2 = encoder->lpf_x1;
+  encoder->lpf_x1 = x;
+  encoder->lpf_y2 = encoder->lpf_y1;
+  encoder->lpf_y1 = y;
+  return y;
+}
+
+static float Foc_EncoderMechFromElecVel(const Foc_Encoder_t *encoder, float omega_e)
+{
+  if (encoder->pole_pairs == 0U)
+  {
+    return 0.0f;
+  }
+  return omega_e / (float)encoder->pole_pairs;
+}
+
 void Foc_EncoderInit(Foc_Encoder_t *encoder, const Foc_EncoderConfig_t *config)
 {
   encoder->pole_pairs = config->pole_pairs;
   encoder->direction = (config->direction < 0) ? -1 : 1;
   encoder->electrical_offset_rad = config->electrical_offset_rad;
-  encoder->pll_kp = config->pll_kp;
-  encoder->pll_ki = config->pll_ki;
   encoder->initialized = 0U;
   encoder->last_raw_mech = 0.0f;
   encoder->mech_wrapped = 0.0f;
   encoder->mech_unwrapped = 0.0f;
   encoder->mech_zero = 0.0f;
-  encoder->pll_theta = 0.0f;
+  encoder->last_elec = 0.0f;
   encoder->vel_hat = 0.0f;
   encoder->elec_angle = 0.0f;
+  Foc_EncoderInitVelLpf(encoder, config->sample_hz, config->vel_lpf_hz);
+  Foc_EncoderClearVelLpf(encoder);
 }
 
 void Foc_EncoderSetAlignment(Foc_Encoder_t *encoder, int8_t direction, float electrical_offset_rad)
@@ -35,10 +84,11 @@ void Foc_EncoderReset(Foc_Encoder_t *encoder, float raw_mech_angle_rad)
   encoder->mech_wrapped = aligned;
   encoder->mech_unwrapped = aligned;
   encoder->mech_zero = 0.0f;
-  encoder->pll_theta = aligned;
-  encoder->vel_hat = 0.0f;
   encoder->elec_angle = Foc_WrapAngle0To2Pi(
       ((float)encoder->pole_pairs * aligned) + encoder->electrical_offset_rad);
+  encoder->last_elec = encoder->elec_angle;
+  encoder->vel_hat = 0.0f;
+  Foc_EncoderClearVelLpf(encoder);
   encoder->initialized = 1U;
 }
 
@@ -47,29 +97,32 @@ void Foc_EncoderSetZero(Foc_Encoder_t *encoder)
   encoder->mech_zero = encoder->mech_unwrapped;
 }
 
-static void Foc_EncoderPllCorrect(Foc_Encoder_t *encoder, float meas, float dt_s)
-{
-  float err;
-
-  encoder->pll_theta += encoder->vel_hat * dt_s;
-  err = meas - encoder->pll_theta;
-  encoder->vel_hat += encoder->pll_ki * err * dt_s;
-  encoder->pll_theta += encoder->pll_kp * err * dt_s;
-}
-
 void Foc_EncoderPredict(Foc_Encoder_t *encoder, float dt_s)
 {
+  float d_mech;
+  float d_elec;
+  float omega_e;
+
   if ((encoder->initialized == 0U) || (dt_s <= 0.0f))
   {
     return;
   }
-  encoder->pll_theta += encoder->vel_hat * dt_s;
+
+  d_mech = encoder->vel_hat * dt_s;
+  d_elec = d_mech * (float)encoder->pole_pairs;
+  encoder->mech_unwrapped += d_mech;
+  encoder->mech_wrapped = Foc_WrapAngle0To2Pi(encoder->mech_wrapped + d_mech);
+  encoder->elec_angle = Foc_WrapAngle0To2Pi(encoder->elec_angle + d_elec);
+  encoder->last_elec = encoder->elec_angle;
+  omega_e = encoder->vel_hat * (float)encoder->pole_pairs;
+  encoder->vel_hat = Foc_EncoderMechFromElecVel(encoder, Foc_EncoderLpfStep(encoder, omega_e));
 }
 
 uint8_t Foc_EncoderUpdate(Foc_Encoder_t *encoder, float raw_mech_angle_rad, float dt_s)
 {
   float aligned;
   float delta;
+  float omega_e;
 
   aligned = Foc_ApplyEncoderDirToMechTheta(raw_mech_angle_rad, encoder->direction);
 
@@ -88,10 +141,12 @@ uint8_t Foc_EncoderUpdate(Foc_Encoder_t *encoder, float raw_mech_angle_rad, floa
   encoder->last_raw_mech = raw_mech_angle_rad;
   encoder->mech_wrapped = aligned;
   encoder->mech_unwrapped += delta;
-  Foc_EncoderPllCorrect(encoder, encoder->mech_unwrapped, dt_s);
-
   encoder->elec_angle = Foc_WrapAngle0To2Pi(
       ((float)encoder->pole_pairs * aligned) + encoder->electrical_offset_rad);
+
+  omega_e = Foc_WrapAngleToPi(encoder->elec_angle - encoder->last_elec) / dt_s;
+  encoder->last_elec = encoder->elec_angle;
+  encoder->vel_hat = Foc_EncoderMechFromElecVel(encoder, Foc_EncoderLpfStep(encoder, omega_e));
 
   return 1U;
 }

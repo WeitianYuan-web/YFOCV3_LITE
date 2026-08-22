@@ -6,7 +6,7 @@ extern "C" {
 #endif
 
 #define CFG_NODE_ID                 (1U)
-#define CFG_POLE_PAIRS              (7U)
+#define CFG_POLE_PAIRS              (14U)
 
 #define CFG_ENCODER_MT6701          (0U)
 #define CFG_ENCODER_KTH7812         (1U)
@@ -21,10 +21,9 @@ extern "C" {
 #define CFG_TIM1_ARR                ((uint32_t)((CFG_SYSCLK_HZ / (2UL * CFG_PWM_HZ)) - 1UL))
 #define CFG_TIM1_DEADTIME_DTG       (17U)   /* ~100 ns at 170 MHz, CKD=1 */
 
-#define CFG_V_LIMIT                 (0.2f)     /* pu; 1.0 = PWM full scale */
+#define CFG_V_LIMIT                 (0.30f)    /* pu; also clamps cali Vd/Vq */
 #define CFG_V_SLEW_PU_S             (100.0f)   /* max |d(Vd,Vq)/dt|, pu/s */
-#define CFG_VEL_PLL_HZ              (50.0f)   /* Type-2 PLL bandwidth; 40-120 typical */
-#define CFG_VEL_PLL_ZETA            (0.707f)   /* zeta = 0.707 for critically damped response */
+#define CFG_VEL_LPF_HZ              (500.0f)  /* 2nd-order Butterworth on d(theta_e)/dt */
 
 #define CFG_CAN_MOTION_BASE         (0x100U)
 #define CFG_CAN_VEL_BASE            (0x140U)
@@ -48,8 +47,8 @@ extern "C" {
 #define CFG_KD_POS_LSB              (0.001f)
 #define CFG_TORQUE_LSB              (0.001f)
 
-#define CFG_VEL_CMD_MIN             (-100.0f)
-#define CFG_VEL_CMD_MAX             (100.0f)
+#define CFG_VEL_CMD_MIN             (-3276.8f) /* int16 * 0.1 rad/s */
+#define CFG_VEL_CMD_MAX             (3276.7f)
 #define CFG_POS_VMAX_DEFAULT        (100.0f)
 #define CFG_POS_ACC_DEFAULT         (80.0f)    /* rad/s^2; v_lim = min(vmax, sqrt(2 a |ep|)) */
 #define CFG_POS_SETTLE_RAD          (1.0f)     /* blend to PID inside this error */
@@ -68,17 +67,18 @@ extern "C" {
 #define CFG_KI_POS_MAX              (5.0f)
 #define CFG_KD_POS_MAX              (5.0f)
 
-#define CFG_CALI_LOCK_V             (0.08f)
+#define CFG_CALI_LOCK_V             (0.30f)
 #define CFG_CALI_LOCK_MS            (500U)
-#define CFG_CALI_ROTATE_ELEC_RAD_S  (3.141592653589793f)    /* 0.5 electrical rev / s; low-R motors slip at 1 rps */
-#define CFG_CALI_PP_ELEC_REVS       (6U)
-#define CFG_CALI_ROTATE_MS          (1000U * CFG_CALI_PP_ELEC_REVS)
+#define CFG_CALI_ROTATE_ELEC_RAD_S  (1.5707963267948966f) /* 0.25 elec rev/s */
+#define CFG_CALI_PP_ELEC_REVS       (6U)   /* per direction */
+#define CFG_CALI_ROTATE_MS          (4000U * CFG_CALI_PP_ELEC_REVS) /* 2π/rate = 4 s/rev */
 #define CFG_CALI_ROTATE_SAMPLE_MS   (10U)
+#define CFG_CALI_OFFSET_SKIP_MS     (400U)
 #define CFG_CALI_MIN_MECH_DELTA     (0.05f)
 #define CFG_CALI_PP_MIN             (2U)
 #define CFG_CALI_PP_MAX             (30U)
-#define CFG_CALI_PP_MAX_RESIDUAL    (0.25f)
-#define CFG_CALI_PROBE_VQ           (0.08f)
+#define CFG_CALI_PP_MAX_RESIDUAL    (0.40f)
+#define CFG_CALI_PROBE_VQ           (0.3f)
 #define CFG_CALI_PROBE_MS           (600U)
 #define CFG_CALI_MIN_VEL            (0.3f)
 #define CFG_CALI_REPORT_MS          (50U)

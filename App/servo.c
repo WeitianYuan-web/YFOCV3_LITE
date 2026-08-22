@@ -109,14 +109,13 @@ static void Servo_ApplyDq(float d_v, float q_v, float elec)
 
 void Servo_Init(void)
 {
-  const float wn = 2.0f * FOC_PI * CFG_VEL_PLL_HZ;
   Foc_EncoderConfig_t cfg;
 
   cfg.pole_pairs = (uint8_t)CFG_POLE_PAIRS;
   cfg.direction = 1;
   cfg.electrical_offset_rad = 0.0f;
-  cfg.pll_kp = 2.0f * CFG_VEL_PLL_ZETA * wn;
-  cfg.pll_ki = wn * wn;
+  cfg.vel_lpf_hz = CFG_VEL_LPF_HZ;
+  cfg.sample_hz = (float)CFG_PWM_HZ;
 
   Foc_EncoderInit(&s_enc, &cfg);
   s_mode = SERVO_IDLE;
@@ -286,6 +285,17 @@ void Servo_SetOpenloop(float d_v, float q_v, float elec_rate_rad_s, float elec_a
   s_ol_rate = elec_rate_rad_s;
   s_ol_elec = Foc_WrapAngle0To2Pi(elec_angle_rad);
   s_mode = SERVO_OPENLOOP;
+}
+
+void Servo_SetOpenloopRate(float elec_rate_rad_s)
+{
+  s_ol_rate = elec_rate_rad_s;
+  s_mode = SERVO_OPENLOOP;
+}
+
+float Servo_GetOpenloopElec(void)
+{
+  return s_ol_elec;
 }
 
 void Servo_SetVoltageCmd(float d_v, float q_v)

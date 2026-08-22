@@ -11,6 +11,8 @@
 #include "servo.h"
 #include "stm32g4xx_hal.h"
 
+#include <math.h>
+
 #define CALI_ST_IDLE         (0x00U)
 #define CALI_ST_RUNNING      (0x01U)
 #define CALI_ST_SUCCESS      (0x02U)
@@ -92,14 +94,26 @@ static void Cali_Delay(uint32_t ms)
 
 static uint8_t Cali_ReadRawMech(float *out)
 {
-  uint16_t raw;
+  const Foc_Encoder_t *enc = Servo_GetEncoder();
+  uint32_t t0;
 
-  if (Encoder_ReadFrame(&raw, 0) == 0U)
+  if (Foc_EncoderIsReady(enc) != 0U)
   {
-    return 0U;
+    *out = Foc_EncoderGetLastRaw(enc);
+    return 1U;
   }
-  *out = ((float)raw * FOC_TWO_PI) / (float)ENCODER_CPR;
-  return 1U;
+
+  t0 = HAL_GetTick();
+  while ((HAL_GetTick() - t0) < 20U)
+  {
+    Cali_Delay(1U);
+    if (Foc_EncoderIsReady(enc) != 0U)
+    {
+      *out = Foc_EncoderGetLastRaw(enc);
+      return 1U;
+    }
+  }
+  return 0U;
 }
 
 static void Cali_Fail(const char *why, uint16_t err)
@@ -119,49 +133,96 @@ static float Cali_Absf(float x)
   return (x < 0.0f) ? -x : x;
 }
 
-static uint8_t Cali_RotateMeasure(float *delta_mech_out)
+typedef struct
+{
+  float sin_p;
+  float cos_p;
+  float sin_n;
+  float cos_n;
+  uint32_t n;
+} CaliOffsetAcc_t;
+
+static void Cali_OffsetAccAdd(CaliOffsetAcc_t *acc, float elec, float raw_mech)
+{
+  float s;
+  float c;
+  float off;
+  float aligned;
+  const float pp = (float)CFG_POLE_PAIRS;
+
+  aligned = Foc_ApplyEncoderDirToMechTheta(raw_mech, 1);
+  off = Foc_WrapAngleToPi(elec - (pp * aligned));
+  Foc_SinCos(off, &s, &c);
+  acc->sin_p += s;
+  acc->cos_p += c;
+
+  aligned = Foc_ApplyEncoderDirToMechTheta(raw_mech, -1);
+  off = Foc_WrapAngleToPi(elec - (pp * aligned));
+  Foc_SinCos(off, &s, &c);
+  acc->sin_n += s;
+  acc->cos_n += c;
+  acc->n++;
+}
+
+static uint8_t Cali_RotateMeasure(float elec_rate, float *delta_mech_out, CaliOffsetAcc_t *off)
 {
   float theta;
   float last;
   float acc = 0.0f;
   uint32_t t0;
+  uint32_t miss = 0U;
 
   if (Cali_ReadRawMech(&last) == 0U)
   {
     return 0U;
   }
 
-  Servo_SetOpenloop(CFG_CALI_LOCK_V, 0.0f, CFG_CALI_ROTATE_ELEC_RAD_S, 0.0f);
+  Servo_SetOpenloopRate(elec_rate);
   t0 = HAL_GetTick();
   while ((HAL_GetTick() - t0) < CFG_CALI_ROTATE_MS)
   {
     Cali_Delay(CFG_CALI_ROTATE_SAMPLE_MS);
     if (Cali_ReadRawMech(&theta) == 0U)
     {
-      return 0U;
+      miss++;
+      if (miss > 20U)
+      {
+        Servo_SetOpenloopRate(0.0f);
+        return 0U;
+      }
+      continue;
     }
+    miss = 0U;
     acc += Foc_WrapAngleToPi(theta - last);
     last = theta;
+    if ((off != 0) && ((HAL_GetTick() - t0) >= CFG_CALI_OFFSET_SKIP_MS))
+    {
+      Cali_OffsetAccAdd(off, Servo_GetOpenloopElec(), theta);
+    }
   }
 
+  Servo_SetOpenloopRate(0.0f);
   *delta_mech_out = acc;
   return 1U;
 }
 
-static uint8_t Cali_EstimatePolePairs(float delta_mech, uint8_t *pp_out)
+static uint8_t Cali_EstimatePolePairs(float abs_mech, float elec_abs, uint8_t *pp_out)
 {
-  const float elec_delta = CFG_CALI_ROTATE_ELEC_RAD_S *
-                           ((float)CFG_CALI_ROTATE_MS / 1000.0f);
-  const float abs_mech = Cali_Absf(delta_mech);
   float pp_f;
   uint8_t pp;
 
-  if (abs_mech < CFG_CALI_MIN_MECH_DELTA)
+  if ((abs_mech < CFG_CALI_MIN_MECH_DELTA) || (elec_abs < 1.0e-6f))
   {
     return 0U;
   }
 
-  pp_f = elec_delta / abs_mech;
+  pp_f = elec_abs / abs_mech;
+  if (Cali_Absf(pp_f - (float)CFG_POLE_PAIRS) <= CFG_CALI_PP_MAX_RESIDUAL)
+  {
+    *pp_out = (uint8_t)CFG_POLE_PAIRS;
+    return 1U;
+  }
+
   pp = (uint8_t)(pp_f + 0.5f);
   if ((pp < CFG_CALI_PP_MIN) || (pp > CFG_CALI_PP_MAX))
   {
@@ -178,14 +239,22 @@ static uint8_t Cali_EstimatePolePairs(float delta_mech, uint8_t *pp_out)
 
 static uint8_t Cali_Run(void)
 {
+  CaliOffsetAcc_t offacc;
   float theta0;
-  float delta;
+  float d_fwd;
+  float d_rev;
   float aligned;
   float offset;
   float vel;
   uint8_t pole_pairs = (uint8_t)CFG_POLE_PAIRS;
   int8_t encoder_dir = 1;
   int8_t closed_loop_dir = 1;
+
+  offacc.sin_p = 0.0f;
+  offacc.cos_p = 0.0f;
+  offacc.sin_n = 0.0f;
+  offacc.cos_n = 0.0f;
+  offacc.n = 0U;
 
   Cali_SetReport(CALI_ST_RUNNING, 10U, CALI_STAGE_ALIGN, CALI_ERR_NONE);
   Pwm_EnableOutputs();
@@ -209,40 +278,56 @@ static uint8_t Cali_Run(void)
   }
 
   Cali_SetReport(CALI_ST_RUNNING, 25U, CALI_STAGE_SAMPLE, CALI_ERR_NONE);
-  if (Cali_RotateMeasure(&delta) == 0U)
+  if (Cali_RotateMeasure(CFG_CALI_ROTATE_ELEC_RAD_S, &d_fwd, &offacc) == 0U)
   {
     Cali_Fail("cali: enc fail", CALI_ERR_ENCODER);
     return 0U;
   }
-
-  Servo_SetOpenloop(CFG_CALI_LOCK_V, 0.0f, 0.0f, 0.0f);
   Cali_Delay(80U);
 
-  if ((delta > -CFG_CALI_MIN_MECH_DELTA) && (delta < CFG_CALI_MIN_MECH_DELTA))
+  Cali_SetReport(CALI_ST_RUNNING, 40U, CALI_STAGE_SAMPLE, CALI_ERR_NONE);
+  if (Cali_RotateMeasure(-CFG_CALI_ROTATE_ELEC_RAD_S, &d_rev, &offacc) == 0U)
+  {
+    Cali_Fail("cali: enc fail", CALI_ERR_ENCODER);
+    return 0U;
+  }
+  Cali_Delay(80U);
+
+  if ((Cali_Absf(d_fwd) < CFG_CALI_MIN_MECH_DELTA) ||
+      (Cali_Absf(d_rev) < CFG_CALI_MIN_MECH_DELTA))
   {
     Cali_Fail("cali: no motion", CALI_ERR_DATA);
     return 0U;
   }
+  if ((d_fwd * d_rev) > 0.0f)
+  {
+    Cali_Fail("cali: dir mismatch", CALI_ERR_DATA);
+    return 0U;
+  }
 
-  if (delta < 0.0f)
+  if (d_fwd < 0.0f)
   {
     encoder_dir = -1;
   }
 
   {
-    const float elec_delta = CFG_CALI_ROTATE_ELEC_RAD_S *
-                             ((float)CFG_CALI_ROTATE_MS / 1000.0f);
-    const float pp_f = (Cali_Absf(delta) > 1.0e-6f) ? (elec_delta / Cali_Absf(delta)) : 0.0f;
-    Dbg_Printf("cali: d=%d ppx100=%d\r\n", (int)(delta * 1000.0f), (int)(pp_f * 100.0f));
-  }
-  if (Cali_EstimatePolePairs(delta, &pole_pairs) == 0U)
-  {
-    Cali_Fail("cali: pp bad", CALI_ERR_DATA);
-    return 0U;
+    const float elec_one = CFG_CALI_ROTATE_ELEC_RAD_S *
+                           ((float)CFG_CALI_ROTATE_MS / 1000.0f);
+    const float abs_avg = 0.5f * (Cali_Absf(d_fwd) + Cali_Absf(d_rev));
+    const float pp_f = (abs_avg > 1.0e-6f) ? (elec_one / abs_avg) : 0.0f;
+    Dbg_Printf("cali: df=%d dr=%d ppx100=%d\r\n",
+               (int)(d_fwd * 1000.0f),
+               (int)(d_rev * 1000.0f),
+               (int)(pp_f * 100.0f));
+    if (Cali_EstimatePolePairs(abs_avg, elec_one, &pole_pairs) == 0U)
+    {
+      Cali_Fail("cali: pp bad", CALI_ERR_DATA);
+      return 0U;
+    }
   }
 
   Cali_SetReport(CALI_ST_RUNNING, 60U, CALI_STAGE_CALC, CALI_ERR_NONE);
-  Servo_SetOpenloop(CFG_CALI_LOCK_V, 0.0f, 0.0f, 0.0f);
+  Servo_SetOpenloopRate(0.0f);
   Cali_Delay(CFG_CALI_LOCK_MS);
   if (Cali_ReadRawMech(&theta0) == 0U)
   {
@@ -251,7 +336,22 @@ static uint8_t Cali_Run(void)
   }
 
   aligned = Foc_ApplyEncoderDirToMechTheta(theta0, encoder_dir);
-  offset = Foc_WrapAngle0To2Pi(-((float)pole_pairs * aligned));
+  if ((offacc.n > 8U) && (pole_pairs == (uint8_t)CFG_POLE_PAIRS))
+  {
+    if (encoder_dir < 0)
+    {
+      offset = Foc_WrapAngle0To2Pi(atan2f(offacc.sin_n, offacc.cos_n));
+    }
+    else
+    {
+      offset = Foc_WrapAngle0To2Pi(atan2f(offacc.sin_p, offacc.cos_p));
+    }
+  }
+  else
+  {
+    offset = Foc_WrapAngle0To2Pi(-((float)pole_pairs * aligned));
+  }
+  Dbg_Printf("cali: off=%d n=%u\r\n", (int)(offset * 1000.0f), (unsigned)offacc.n);
   Servo_SetPolePairs(pole_pairs);
   Servo_SetEncoderAlignment(encoder_dir, offset);
   Foc_EncoderReset(Servo_GetEncoder(), theta0);
@@ -271,18 +371,28 @@ static uint8_t Cali_Run(void)
     last = Foc_ApplyEncoderDirToMechTheta(last, encoder_dir);
     Servo_SetVoltageCmd(0.0f, CFG_CALI_PROBE_VQ);
     t0 = HAL_GetTick();
-    while ((HAL_GetTick() - t0) < CFG_CALI_PROBE_MS)
     {
-      Cali_Delay(CFG_CALI_ROTATE_SAMPLE_MS);
-      if (Cali_ReadRawMech(&theta) == 0U)
+      uint32_t miss = 0U;
+
+      while ((HAL_GetTick() - t0) < CFG_CALI_PROBE_MS)
       {
-        Servo_SetVoltageCmd(0.0f, 0.0f);
-        Cali_Fail("cali: enc fail", CALI_ERR_ENCODER);
-        return 0U;
+        Cali_Delay(CFG_CALI_ROTATE_SAMPLE_MS);
+        if (Cali_ReadRawMech(&theta) == 0U)
+        {
+          miss++;
+          if (miss > 20U)
+          {
+            Servo_SetVoltageCmd(0.0f, 0.0f);
+            Cali_Fail("cali: enc fail", CALI_ERR_ENCODER);
+            return 0U;
+          }
+          continue;
+        }
+        miss = 0U;
+        theta = Foc_ApplyEncoderDirToMechTheta(theta, encoder_dir);
+        acc += Foc_WrapAngleToPi(theta - last);
+        last = theta;
       }
-      theta = Foc_ApplyEncoderDirToMechTheta(theta, encoder_dir);
-      acc += Foc_WrapAngleToPi(theta - last);
-      last = theta;
     }
     vel = Foc_EncoderGetVelocity(Servo_GetEncoder());
     Servo_SetVoltageCmd(0.0f, 0.0f);

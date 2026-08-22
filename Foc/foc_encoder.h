@@ -13,8 +13,8 @@ typedef struct
   uint8_t pole_pairs;
   int8_t  direction;
   float   electrical_offset_rad;
-  float   pll_kp;
-  float   pll_ki;
+  float   vel_lpf_hz;
+  float   sample_hz;
 } Foc_EncoderConfig_t;
 
 typedef struct
@@ -22,16 +22,23 @@ typedef struct
   uint8_t pole_pairs;
   int8_t  direction;
   float   electrical_offset_rad;
-  float   pll_kp;
-  float   pll_ki;
   uint8_t initialized;
   float   last_raw_mech;
   float   mech_wrapped;
   float   mech_unwrapped;
   float   mech_zero;
-  float   pll_theta;
+  float   last_elec;
   float   vel_hat;
   float   elec_angle;
+  float   lpf_b0;
+  float   lpf_b1;
+  float   lpf_b2;
+  float   lpf_a1;
+  float   lpf_a2;
+  float   lpf_x1;
+  float   lpf_x2;
+  float   lpf_y1;
+  float   lpf_y2;
 } Foc_Encoder_t;
 
 void Foc_EncoderInit(Foc_Encoder_t *encoder, const Foc_EncoderConfig_t *config);
