@@ -13,6 +13,9 @@ extern TIM_HandleTypeDef   htim1;
 extern TIM_HandleTypeDef   htim6;
 
 void Board_Init(void);
+void Board_DwtInit(void);
+uint32_t Board_DwtGetCycles(void);
+uint32_t Board_DwtCyclesToNs(uint32_t cycles);
 void Board_LedSet(uint8_t on);
 void Board_LedToggle(void);
 void Error_Handler(void);

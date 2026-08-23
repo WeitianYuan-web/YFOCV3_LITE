@@ -137,12 +137,12 @@ set(TARGET_FLAGS "-mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard ")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${TARGET_FLAGS}")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wpedantic -fdata-sections -ffunction-sections")
 
-# Override CMake's default Release (-O3) / Debug (-g) config flags.
-# On 128 KB G4 parts, -O3 overflows FLASH; size-optimized -Os is required.
-set(CMAKE_C_FLAGS_DEBUG          "-Og -g3"         CACHE STRING "Debug C flags" FORCE)
-set(CMAKE_C_FLAGS_RELEASE        "-Os -g0 -DNDEBUG" CACHE STRING "Release C flags" FORCE)
-set(CMAKE_C_FLAGS_RELWITHDEBINFO "-Os -g3 -DNDEBUG" CACHE STRING "RelWithDebInfo C flags" FORCE)
-set(CMAKE_C_FLAGS_MINSIZEREL     "-Os -DNDEBUG"    CACHE STRING "MinSizeRel C flags" FORCE)
+# Release is -O2. FOC/ISR files add -O3 in CMakeLists (local, not whole firmware).
+# MinSizeRel stays -Os if Flash gets tight. Debug stays -Og.
+set(CMAKE_C_FLAGS_DEBUG          "-Og -g3"          CACHE STRING "Debug C flags" FORCE)
+set(CMAKE_C_FLAGS_RELEASE        "-O2 -g0 -DNDEBUG" CACHE STRING "Release C flags" FORCE)
+set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O2 -g3 -DNDEBUG" CACHE STRING "RelWithDebInfo C flags" FORCE)
+set(CMAKE_C_FLAGS_MINSIZEREL     "-Os -DNDEBUG"     CACHE STRING "MinSizeRel C flags" FORCE)
 
 set(CMAKE_CXX_FLAGS_DEBUG          "${CMAKE_C_FLAGS_DEBUG}"          CACHE STRING "Debug CXX flags" FORCE)
 set(CMAKE_CXX_FLAGS_RELEASE        "${CMAKE_C_FLAGS_RELEASE}"        CACHE STRING "Release CXX flags" FORCE)

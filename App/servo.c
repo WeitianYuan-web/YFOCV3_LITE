@@ -1,6 +1,8 @@
 #include "servo.h"
 
+#include "board.h"
 #include "config.h"
+#include "debug.h"
 #include "encoder.h"
 #include "foc_math.h"
 #include "foc_svpwm.h"
@@ -111,6 +113,7 @@ void Servo_Init(void)
 {
   Foc_EncoderConfig_t cfg;
 
+  Foc_MathInit();
   cfg.pole_pairs = (uint8_t)CFG_POLE_PAIRS;
   cfg.direction = 1;
   cfg.electrical_offset_rad = 0.0f;
@@ -138,6 +141,65 @@ void Servo_Init(void)
   s_cmd_valid = 0U;
   s_d_out = 0.0f;
   s_q_out = 0.0f;
+}
+
+static void Servo_RunPwmPathOnce(void)
+{
+  uint16_t raw;
+
+  if (Encoder_ReadRawFast(&raw) != 0U)
+  {
+    const float mech = ((float)raw * FOC_TWO_PI) / (float)ENCODER_CPR;
+    (void)Foc_EncoderUpdate(&s_enc, mech, CFG_PWM_DT_S);
+  }
+  else
+  {
+    Foc_EncoderPredict(&s_enc, CFG_PWM_DT_S);
+  }
+  Servo_ApplyDq(0.0f, 0.0f, Foc_EncoderGetElectrical(&s_enc));
+}
+
+void Servo_PrintStartupTiming(void)
+{
+  const uint32_t n = 1000U;
+  uint16_t raw;
+  uint32_t t0;
+  uint32_t enc_cyc;
+  uint32_t foc_cyc;
+  uint64_t enc_sum = 0ULL;
+  uint64_t foc_sum = 0ULL;
+  uint32_t primask;
+  uint32_t i;
+
+  Board_DwtInit();
+  for (i = 0U; i < 3U; i++)
+  {
+    (void)Encoder_ReadRawFast(&raw);
+    Servo_RunPwmPathOnce();
+  }
+
+  primask = __get_PRIMASK();
+  __disable_irq();
+  for (i = 0U; i < n; i++)
+  {
+    t0 = Board_DwtGetCycles();
+    (void)Encoder_ReadRawFast(&raw);
+    enc_sum += (uint64_t)(Board_DwtGetCycles() - t0);
+    t0 = Board_DwtGetCycles();
+    Servo_RunPwmPathOnce();
+    foc_sum += (uint64_t)(Board_DwtGetCycles() - t0);
+  }
+  __set_PRIMASK(primask);
+
+  enc_cyc = (uint32_t)(enc_sum / (uint64_t)n);
+  foc_cyc = (uint32_t)(foc_sum / (uint64_t)n);
+  Dbg_Printf("dwt: n=%u enc=%u cyc %u ns  foc=%u cyc %u ns  pwm=%u us\r\n",
+             (unsigned)n,
+             (unsigned)enc_cyc,
+             (unsigned)Board_DwtCyclesToNs(enc_cyc),
+             (unsigned)foc_cyc,
+             (unsigned)Board_DwtCyclesToNs(foc_cyc),
+             (unsigned)(1000000UL / CFG_PWM_HZ));
 }
 
 void Servo_OnPwmIsr(void)

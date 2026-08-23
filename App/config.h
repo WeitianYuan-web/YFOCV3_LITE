@@ -21,7 +21,7 @@ extern "C" {
 #define CFG_TIM1_ARR                ((uint32_t)((CFG_SYSCLK_HZ / (2UL * CFG_PWM_HZ)) - 1UL))
 #define CFG_TIM1_DEADTIME_DTG       (17U)   /* ~100 ns at 170 MHz, CKD=1 */
 
-#define CFG_V_LIMIT                 (0.30f)    /* pu; also clamps cali Vd/Vq */
+#define CFG_V_LIMIT                 (0.50f)    /* pu; also clamps cali Vd/Vq */
 #define CFG_V_SLEW_PU_S             (100.0f)   /* max |d(Vd,Vq)/dt|, pu/s */
 #define CFG_VEL_LPF_HZ              (500.0f)  /* 2nd-order Butterworth on d(theta_e)/dt */
 
@@ -67,7 +67,7 @@ extern "C" {
 #define CFG_KI_POS_MAX              (5.0f)
 #define CFG_KD_POS_MAX              (5.0f)
 
-#define CFG_CALI_LOCK_V             (0.30f)
+#define CFG_CALI_LOCK_V             (0.05f)
 #define CFG_CALI_LOCK_MS            (500U)
 #define CFG_CALI_ROTATE_ELEC_RAD_S  (1.5707963267948966f) /* 0.25 elec rev/s */
 #define CFG_CALI_PP_ELEC_REVS       (6U)   /* per direction */
@@ -78,7 +78,7 @@ extern "C" {
 #define CFG_CALI_PP_MIN             (2U)
 #define CFG_CALI_PP_MAX             (30U)
 #define CFG_CALI_PP_MAX_RESIDUAL    (0.40f)
-#define CFG_CALI_PROBE_VQ           (0.3f)
+#define CFG_CALI_PROBE_VQ           (0.05f)
 #define CFG_CALI_PROBE_MS           (600U)
 #define CFG_CALI_MIN_VEL            (0.3f)
 #define CFG_CALI_REPORT_MS          (50U)

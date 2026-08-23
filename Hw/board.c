@@ -311,6 +311,24 @@ void Board_Init(void)
   Board_SpiInit();
   Board_Tim1Init();
   Board_Tim6Init();
+  Board_DwtInit();
+}
+
+void Board_DwtInit(void)
+{
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CYCCNT = 0U;
+  DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+uint32_t Board_DwtGetCycles(void)
+{
+  return DWT->CYCCNT;
+}
+
+uint32_t Board_DwtCyclesToNs(uint32_t cycles)
+{
+  return (uint32_t)(((uint64_t)cycles * 1000000000ULL) / (uint64_t)CFG_SYSCLK_HZ);
 }
 
 void Board_LedSet(uint8_t on)

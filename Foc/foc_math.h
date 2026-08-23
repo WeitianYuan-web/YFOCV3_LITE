@@ -24,6 +24,7 @@ typedef struct
   float q;
 } Foc_Dq_t;
 
+void Foc_MathInit(void);
 float Foc_Clamp(float in, float min_v, float max_v);
 float Foc_WrapAngle0To2Pi(float angle_rad);
 float Foc_WrapAngleToPi(float angle_rad);

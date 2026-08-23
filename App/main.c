@@ -18,9 +18,10 @@ int main(void)
   Encoder_Init();
   Servo_Init();
   Can_Init((uint8_t)CFG_NODE_ID);
-  Pwm_StartTimer();
 
   Dbg_Printf("YFOCV3 LC-ESC voltage servo\r\n");
+  Servo_PrintStartupTiming();
+  Pwm_StartTimer();
   Board_LedSet(1U);
   cali_ok = Cali_Start();
   Comm_Init(cali_ok);

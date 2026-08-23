@@ -21,6 +21,10 @@ set(CMAKE_PROJECT_NAME YFOCV3)
 
 project(${CMAKE_PROJECT_NAME} C ASM)
 
+# Toolchain file can return early on reconfigure; keep Release at -O2 here.
+set(CMAKE_C_FLAGS_RELEASE        "-O2 -g0 -DNDEBUG" CACHE STRING "Release C flags" FORCE)
+set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O2 -g3 -DNDEBUG" CACHE STRING "RelWithDebInfo C flags" FORCE)
+
 add_executable(${CMAKE_PROJECT_NAME})
 
 set(HAL_DIR   "${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32G4xx_HAL_Driver")
@@ -85,6 +89,18 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     USE_HAL_DRIVER
     STM32G431xx
     $<$<CONFIG:Debug>:DEBUG>
+)
+
+# Hot path: last -O wins over the global -O2. Skip -ffast-math (breaks wrap/NaN).
+set_source_files_properties(
+    Foc/foc_math.c
+    Foc/foc_svpwm.c
+    Foc/foc_encoder.c
+    Hw/encoder.c
+    Hw/pwm.c
+    App/servo.c
+    PROPERTIES
+        COMPILE_OPTIONS "$<$<CONFIG:Release,RelWithDebInfo>:-O3;-fno-math-errno;-fno-trapping-math>"
 )
 
 # Forward slashes: GNU ld on Windows rejects mixed/backslash -T paths.
