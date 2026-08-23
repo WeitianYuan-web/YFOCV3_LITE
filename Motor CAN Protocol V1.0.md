@@ -15,6 +15,7 @@
 | Position `0x1C0` | 位置 PID 外环 + 速度 PI 内环（内环用 VELOCITY Gains）；外环积分对 `±vmax` 钳位，内环电压饱和时冻结外环积分 |
 | Gains `0x180` | 三组都接受。MOTION：Ki=0；VELOCITY：Kd=0；POSITION：外环 Kp/Ki/Kd |
 | SET_ZERO / GET_STATUS / SET_CONTROL_MODE | 已接入；上电默认 `MOTION_MODE`；`RUNNING` 下可切换三模式；`GET_STATUS` 母线电压为 PB0 实测 |
+| SET_NODE_ID `0x07` | 本固件扩展。Byte2=新 ID（1–63），成功则旧 ID 上回 ACK（Byte6=新 ID）后软复位；与校准记录同页保存 |
 | CLEAR_FAULT | 可清除闩锁的 `CALIBRATION_FAULT` |
 | START_ENCODER_CALIBRATION + `0x3C0` | 先 ACK 再校准；约 50 ms 上报，Stage 变化立即多发一帧 |
 | 非实时重发 | 相同 Command+Sequence 重发缓存应答，不重复执行 |
@@ -517,7 +518,7 @@ Command 定义：
 0x10  GET_STATUS
 ```
 
-> **本固件：** `ENABLE`/`DISABLE` → `INVALID_COMMAND`。其余命令见各节标注。
+> **本固件：** `ENABLE`/`DISABLE` → `INVALID_COMMAND`。其余命令见各节标注。扩展命令 `0x07 SET_NODE_ID` 见 5.2。
 
 ## 5.1 SET_CONTROL_MODE
 
@@ -584,6 +585,32 @@ Result   = OK / INVALID_STATE / PARAMETER_OUT_OF_RANGE
 ```
 
 Control Mode 非法或 Byte3~7 不为 0 时返回 `PARAMETER_OUT_OF_RANGE`。
+
+## 5.2 SET_NODE_ID（本固件扩展）
+
+运行时修改 Motor ID，写入与校准共用的 Flash 页后软件复位。请求仍发到 **当前** `0x200+ID`。
+
+```text
+CAN ID = 0x200 + MotorID
+
+Byte0 = 0x07
+Byte1 = Sequence
+Byte2 = New Motor ID（1~63）
+Byte3~7 = 0
+```
+
+> **本固件：** `CALIBRATING` → `BUSY`。ID 非法或 Reserved 非 0 → `PARAMETER_OUT_OF_RANGE`。写 Flash 失败 → `INTERNAL_ERROR`，不复位。`RUNNING`/`FAULT` 可执行。成功时先在 **旧 ID** 的 `0x280` 回 ACK（Byte6=新 ID），约 20 ms 后 `NVIC_SystemReset`。新 ID 与当前相同则 ACK 且不复位。无有效校准时仍可只写 ID；之后校准 `CaliNv_Save` 会保留该 ID。PB3 长按 2 s 进入改 ID（短按 +1，再长按保存复位，10 s 无操作退出）。
+
+应答：
+
+```text
+CAN ID = 0x280 + 旧 MotorID
+
+Command  = 0x07
+Sequence = 请求中的 Sequence
+Result   = OK / BUSY / PARAMETER_OUT_OF_RANGE / INTERNAL_ERROR
+Byte6    = New Motor ID（成功时）
+```
 
 ---
 
@@ -1161,6 +1188,7 @@ Command：
 0x04 CLEAR_FAULT
 0x05 START_ENCODER_CALIBRATION
 0x06 SET_CONTROL_MODE
+0x07 SET_NODE_ID（本固件扩展）
 0x20 SET_GAINS
 ```
 
@@ -1194,6 +1222,7 @@ Result：
 | `CLEAR_FAULT` | **`Command ACK 0x280`** |
 | `START_ENCODER_CALIBRATION` | **先 `ACK 0x280`，随后主动发送 `Calibration Report 0x3C0`** |
 | `SET_CONTROL_MODE` | **`Command ACK 0x280`** |
+| `SET_NODE_ID`（本固件） | **`Command ACK 0x280`（旧 ID），随后复位** |
 | `GET_STATUS` | **`Status Response 0x380`** |
 
 > **本固件：** `0x100`/`0x140`/`0x1C0` 均按当前模式回 Feedback。`ENABLE`/`DISABLE` 仍回 `0x280`，Result=`INVALID_COMMAND`。
@@ -1259,6 +1288,7 @@ Result：
 | SET_ZERO / CLEAR_FAULT | 每帧处理并返回 Command ACK |
 | START_ENCODER_CALIBRATION | 每帧处理并返回 Command ACK；接受后再主动上报进度 |
 | SET_CONTROL_MODE | 每帧处理并返回 Command ACK |
+| SET_NODE_ID | 每帧处理并返回 Command ACK；成功则随后复位 |
 | GET_STATUS | 每帧返回 Status Response |
 
 新的非实时请求使用新的 Sequence。主机因应答超时重发同一请求时，必须使用与原请求相同的 Command 和 Sequence。推荐驱动器缓存最近一次非实时请求及其应答；收到相同 Command 和 Sequence 的重复请求时，重新发送缓存的应答，不重复执行命令。

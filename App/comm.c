@@ -5,6 +5,7 @@
 #include "can.h"
 #include "config.h"
 #include "foc_math.h"
+#include "node.h"
 #include "pwm.h"
 #include "servo.h"
 
@@ -20,6 +21,7 @@
 #define COMM_CMD_CLEAR_FAULT        (0x04U)
 #define COMM_CMD_START_CALI         (0x05U)
 #define COMM_CMD_SET_MODE           (0x06U)
+#define COMM_CMD_SET_NODE_ID        (0x07U)
 #define COMM_CMD_GET_STATUS         (0x10U)
 #define COMM_CMD_SET_GAINS          (0x20U)
 
@@ -29,6 +31,7 @@
 #define COMM_RES_OUT_OF_RANGE       (0x03U)
 #define COMM_RES_FAULT_ACTIVE       (0x04U)
 #define COMM_RES_BUSY               (0x05U)
+#define COMM_RES_INTERNAL_ERROR     (0x06U)
 
 #define COMM_FAULT_CALIBRATION      (1U << 10)
 
@@ -155,7 +158,12 @@ static uint8_t Comm_ReplayIfDup(uint8_t cmd, uint8_t seq)
   return 0U;
 }
 
-static void Comm_SendAck(uint8_t cmd, uint8_t seq, uint8_t result)
+static uint32_t Comm_Nid(void)
+{
+  return (uint32_t)Node_GetId();
+}
+
+static void Comm_SendAckArg(uint8_t cmd, uint8_t seq, uint8_t result, uint8_t arg)
 {
   uint8_t data[8] = {0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U};
   data[0] = cmd;
@@ -163,7 +171,13 @@ static void Comm_SendAck(uint8_t cmd, uint8_t seq, uint8_t result)
   data[2] = result;
   data[3] = s_state;
   Comm_WriteU16Le(&data[4], s_fault);
-  Comm_CacheSend(CFG_CAN_ACK_BASE + CFG_NODE_ID, cmd, seq, data);
+  data[6] = arg;
+  Comm_CacheSend(CFG_CAN_ACK_BASE + Comm_Nid(), cmd, seq, data);
+}
+
+static void Comm_SendAck(uint8_t cmd, uint8_t seq, uint8_t result)
+{
+  Comm_SendAckArg(cmd, seq, result, 0U);
 }
 
 static void Comm_SendStatus(uint8_t seq)
@@ -184,7 +198,7 @@ static void Comm_SendStatus(uint8_t seq)
   }
   Comm_WriteU16Le(&data[3], (uint16_t)vbus_raw);
   data[7] = (uint8_t)((Servo_GetCtrlMode() & 0x03U) << 5);
-  Comm_CacheSend(CFG_CAN_STATUS_BASE + CFG_NODE_ID, COMM_CMD_GET_STATUS, seq, data);
+  Comm_CacheSend(CFG_CAN_STATUS_BASE + Comm_Nid(), COMM_CMD_GET_STATUS, seq, data);
 }
 
 static void Comm_SendFeedback(void)
@@ -197,7 +211,7 @@ static void Comm_SendFeedback(void)
   Comm_WriteI16Le(&data[4], Comm_FloatToI16(tel.v_act, CFG_VEL_LSB));
   /* Voltage firmware: 0.001 pu/LSB in the protocol torque field. */
   Comm_WriteI16Le(&data[6], Comm_FloatToI16(tel.t_ref, CFG_TORQUE_LSB));
-  Comm_SendRaw(CFG_CAN_FB_BASE + CFG_NODE_ID, data);
+  Comm_SendRaw(CFG_CAN_FB_BASE + Comm_Nid(), data);
 }
 
 static uint8_t Comm_ParseMotion(const uint8_t *d, float *p, float *v, float *ff)
@@ -369,6 +383,27 @@ static void Comm_HandleMgmt(const uint8_t *d)
       Comm_SendAck(cmd, seq, COMM_RES_OK);
       break;
 
+    case COMM_CMD_SET_NODE_ID:
+      if ((d[2] < CFG_NODE_ID_MIN) || (d[2] > CFG_NODE_ID_MAX) ||
+          (Comm_ReservedZero(d, 3U) == 0U))
+      {
+        Comm_SendAck(cmd, seq, COMM_RES_OUT_OF_RANGE);
+        break;
+      }
+      if (s_state == COMM_STATE_CALIBRATING)
+      {
+        Comm_SendAck(cmd, seq, COMM_RES_BUSY);
+        break;
+      }
+      Servo_HoldPosition();
+      if (Node_ApplyAndReset(d[2]) == 0U)
+      {
+        Comm_SendAck(cmd, seq, COMM_RES_INTERNAL_ERROR);
+        break;
+      }
+      Comm_SendAckArg(cmd, seq, COMM_RES_OK, d[2]);
+      break;
+
     case COMM_CMD_GET_STATUS:
       if (Comm_ReservedZero(d, 2U) == 0U)
       {
@@ -442,7 +477,7 @@ void Comm_Process(void)
   float v_set = 0.0f;
   float t_ff = 0.0f;
   float v_max = 0.0f;
-  const uint32_t nid = CFG_NODE_ID;
+  const uint32_t nid = Comm_Nid();
 
   while (Can_PopRx(&frame) != 0U)
   {

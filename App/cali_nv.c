@@ -49,13 +49,43 @@ static uint32_t CaliNv_RecordCrc(const CaliNvRecord_t *rec)
   return CaliNv_Crc32((const uint8_t *)rec, offsetof(CaliNvRecord_t, crc32));
 }
 
-static uint8_t CaliNv_RecordValid(const CaliNvRecord_t *rec)
+static uint8_t CaliNv_HeaderOk(const CaliNvRecord_t *rec)
 {
   if (rec->magic != CALI_NV_MAGIC)
   {
     return 0U;
   }
   if (rec->version != CALI_NV_VERSION)
+  {
+    return 0U;
+  }
+  if (rec->crc32 != CaliNv_RecordCrc(rec))
+  {
+    return 0U;
+  }
+  return 1U;
+}
+
+static uint8_t CaliNv_ReadRaw(CaliNvRecord_t *rec)
+{
+  if (rec == 0)
+  {
+    return 0U;
+  }
+  __DSB();
+  memcpy(rec, (const void *)CALI_NV_ADDR, sizeof(*rec));
+  __DSB();
+  return CaliNv_HeaderOk(rec);
+}
+
+static uint8_t CaliNv_NodeIdOk(uint32_t id)
+{
+  return ((id >= CFG_NODE_ID_MIN) && (id <= CFG_NODE_ID_MAX)) ? 1U : 0U;
+}
+
+static uint8_t CaliNv_RecordValid(const CaliNvRecord_t *rec)
+{
+  if (CaliNv_HeaderOk(rec) == 0U)
   {
     return 0U;
   }
@@ -69,10 +99,6 @@ static uint8_t CaliNv_RecordValid(const CaliNvRecord_t *rec)
     return 0U;
   }
   if ((rec->closed_loop_dir != 1) && (rec->closed_loop_dir != -1))
-  {
-    return 0U;
-  }
-  if (rec->crc32 != CaliNv_RecordCrc(rec))
   {
     return 0U;
   }
@@ -114,6 +140,39 @@ static uint8_t CaliNv_EraseUnlocked(void)
   return (HAL_FLASHEx_Erase(&erase, &page_error) == HAL_OK) ? 1U : 0U;
 }
 
+static uint8_t CaliNv_Program(const CaliNvRecord_t *rec)
+{
+  uint64_t words[4];
+  uint32_t i;
+  uint8_t ok = 0U;
+  const uint32_t primask = CaliNv_IrqQuiesce();
+
+  memcpy(words, rec, sizeof(*rec));
+  if (HAL_FLASH_Unlock() != HAL_OK)
+  {
+    CaliNv_IrqResume(primask);
+    return 0U;
+  }
+  if (CaliNv_EraseUnlocked() != 0U)
+  {
+    ok = 1U;
+    for (i = 0U; i < 4U; i++)
+    {
+      if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD,
+                            CALI_NV_ADDR + (i * 8UL),
+                            words[i]) != HAL_OK)
+      {
+        ok = 0U;
+        break;
+      }
+    }
+  }
+  (void)HAL_FLASH_Lock();
+  __DSB();
+  CaliNv_IrqResume(primask);
+  return ok;
+}
+
 uint8_t CaliNv_Load(CaliNvData_t *out)
 {
   CaliNvRecord_t rec;
@@ -136,15 +195,29 @@ uint8_t CaliNv_Load(CaliNvData_t *out)
   out->encoder_dir = (int8_t)rec.encoder_dir;
   out->closed_loop_dir = (int8_t)rec.closed_loop_dir;
   out->electrical_offset_rad = rec.electrical_offset_rad;
+  out->node_id = CaliNv_NodeIdOk(rec.reserved[0]) ? (uint8_t)rec.reserved[0] : 0U;
   return 1U;
+}
+
+uint8_t CaliNv_LoadNodeId(void)
+{
+  CaliNvRecord_t rec;
+
+  if (CaliNv_ReadRaw(&rec) == 0U)
+  {
+    return 0U;
+  }
+  if (CaliNv_NodeIdOk(rec.reserved[0]) == 0U)
+  {
+    return 0U;
+  }
+  return (uint8_t)rec.reserved[0];
 }
 
 uint8_t CaliNv_Save(const CaliNvData_t *in)
 {
   CaliNvRecord_t rec;
-  uint64_t words[4];
-  uint32_t i;
-  uint8_t ok = 0U;
+  uint8_t ok;
 
   if (in == 0)
   {
@@ -162,36 +235,10 @@ uint8_t CaliNv_Save(const CaliNvData_t *in)
   rec.encoder_dir = (int16_t)((in->encoder_dir < 0) ? -1 : 1);
   rec.closed_loop_dir = (int16_t)((in->closed_loop_dir < 0) ? -1 : 1);
   rec.electrical_offset_rad = in->electrical_offset_rad;
+  rec.reserved[0] = CaliNv_NodeIdOk(in->node_id) ? (uint32_t)in->node_id : 0U;
   rec.crc32 = CaliNv_RecordCrc(&rec);
-  memcpy(words, &rec, sizeof(rec));
 
-  {
-    const uint32_t primask = CaliNv_IrqQuiesce();
-
-    if (HAL_FLASH_Unlock() != HAL_OK)
-    {
-      CaliNv_IrqResume(primask);
-      return 0U;
-    }
-    if (CaliNv_EraseUnlocked() != 0U)
-    {
-      ok = 1U;
-      for (i = 0U; i < 4U; i++)
-      {
-        if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD,
-                              CALI_NV_ADDR + (i * 8UL),
-                              words[i]) != HAL_OK)
-        {
-          ok = 0U;
-          break;
-        }
-      }
-    }
-    (void)HAL_FLASH_Lock();
-    __DSB();
-    CaliNv_IrqResume(primask);
-  }
-
+  ok = CaliNv_Program(&rec);
   if (ok != 0U)
   {
     CaliNvData_t check;
@@ -204,4 +251,28 @@ uint8_t CaliNv_Save(const CaliNvData_t *in)
     }
   }
   return ok;
+}
+
+uint8_t CaliNv_SaveNodeId(uint8_t node_id)
+{
+  CaliNvRecord_t rec;
+
+  if (CaliNv_NodeIdOk(node_id) == 0U)
+  {
+    return 0U;
+  }
+
+  if (CaliNv_ReadRaw(&rec) == 0U)
+  {
+    memset(&rec, 0, sizeof(rec));
+    rec.magic = CALI_NV_MAGIC;
+    rec.version = CALI_NV_VERSION;
+  }
+  rec.reserved[0] = (uint32_t)node_id;
+  rec.crc32 = CaliNv_RecordCrc(&rec);
+  if (CaliNv_Program(&rec) == 0U)
+  {
+    return 0U;
+  }
+  return (CaliNv_LoadNodeId() == node_id) ? 1U : 0U;
 }

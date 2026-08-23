@@ -3,6 +3,7 @@
 #include "cali_nv.h"
 #include "can.h"
 #include "config.h"
+#include "node.h"
 #include "debug.h"
 #include "encoder.h"
 #include "foc_encoder.h"
@@ -54,7 +55,7 @@ static void Cali_SendReport(void)
   data[3] = s_rpt_stage;
   data[4] = (uint8_t)(s_rpt_error & 0xFFU);
   data[5] = (uint8_t)(s_rpt_error >> 8);
-  (void)Can_Send(CFG_CAN_CALI_RPT_BASE + CFG_NODE_ID, data);
+  (void)Can_Send(CFG_CAN_CALI_RPT_BASE + Node_GetId(), data);
   s_rpt_last_ms = HAL_GetTick();
 }
 
@@ -473,6 +474,7 @@ static uint8_t Cali_SaveCurrent(void)
   nv.encoder_dir = enc->direction;
   nv.closed_loop_dir = tel.closed_loop_dir;
   nv.electrical_offset_rad = enc->electrical_offset_rad;
+  nv.node_id = Node_GetId();
 
   Servo_SetMode(SERVO_IDLE);
   Pwm_ApplyDuty(FOC_PWM_NEUTRAL_DUTY, FOC_PWM_NEUTRAL_DUTY, FOC_PWM_NEUTRAL_DUTY);

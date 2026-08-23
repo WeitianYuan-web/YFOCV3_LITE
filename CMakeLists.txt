@@ -75,6 +75,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/cali.c
     App/cali_nv.c
     App/comm.c
+    App/node.c
 )
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE

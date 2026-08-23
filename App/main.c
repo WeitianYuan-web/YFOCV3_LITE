@@ -6,6 +6,7 @@
 #include "config.h"
 #include "debug.h"
 #include "encoder.h"
+#include "node.h"
 #include "pwm.h"
 #include "servo.h"
 
@@ -18,7 +19,8 @@ int main(void)
   Dbg_Init();
   Encoder_Init();
   Servo_Init();
-  Can_Init((uint8_t)CFG_NODE_ID);
+  Node_Init();
+  Can_Init(Node_GetId());
 
   Dbg_Printf("YFOCV3 LC-ESC voltage servo\r\n");
   Servo_PrintStartupTiming();
@@ -35,8 +37,6 @@ int main(void)
     Dbg_Printf("run\r\n");
   }
 
-  Board_LedSet(cali_ok);
-
   for (;;)
   {
     uint32_t now;
@@ -44,6 +44,7 @@ int main(void)
     Can_Service();
     Adc_Service();
     Comm_Process();
+    Node_Service(cali_ok);
 
     now = HAL_GetTick();
     if ((now - last_dbg_ms) >= CFG_DEBUG_PERIOD_MS)
@@ -59,10 +60,6 @@ int main(void)
                  (int)(tel.kp * 10.0f),
                  (int)(tel.kd * 1000.0f),
                  (int)(Adc_GetVbusVolts() * 100.0f));
-      if (cali_ok == 0U)
-      {
-        Board_LedToggle();
-      }
     }
   }
 }

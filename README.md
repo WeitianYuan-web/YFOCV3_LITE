@@ -62,7 +62,8 @@ openocd -s /path/to/openocd/scripts -f scripts/openocd-stm32g431.cfg \
 | SPI1 编码器 | PA5/6/7，CS=PA4（`CFG_ENCODER_TYPE`：MT6701 SSI 或 KTH7812 SPI Mode3） |
 | 母线电压 | PB0 / ADC1_IN15，`Vbus = Vadc × 31.3` |
 | FDCAN1 | PA11 / PA12，Classic 1 Mbps |
-| LED | PC13，高电平亮 |
+| LED | PC13，高电平亮；正常运行按 ID 闪（十位长闪 + 个位短闪） |
+| 按键 | PB3 上拉，按下接地。长按 2 s 改 ID，短按 +1，再长按保存并复位 |
 | 时钟 | HSE 32 MHz → 170 MHz |
 
 PWM 20 kHz 中心对齐；TIM6 4 kHz 运控。母线电压走 ADC1 规则组（软件触发，约 5 ms）；注入组空着，留给以后的 20 kHz 电流，运行中不换通道、不停 ADC。当前无电流采样。
@@ -75,7 +76,7 @@ PWM 20 kHz 中心对齐；TIM6 4 kHz 运控。母线电压走 ADC1 规则组（�
 
 无有效记录时走与 CAN `START_ENCODER_CALIBRATION` **同一套** `Cali_RunCommand`：锁定、转圈估极对数/方向、探闭环方向、写 Flash，并按约 50 ms 发 `0x3C0` 进度（上电 Sequence=0）。有有效记录则只加载，不上报校准进度。
 
-失败：LED 快闪，PWM 关闭。成功：LED 常亮，进入运控。位置坐标用编码器单圈机械角（不对零）；目标位置设为当时的实际位置，避免上电窜动。MT6701 是单圈，掉电后不保留多圈计数。
+失败：LED 快闪，PWM 关闭。成功：LED 按 Motor ID 闪烁（例如 12 = 1 长 + 2 短），进入运控。位置坐标用编码器单圈机械角（不对零）；目标位置设为当时的实际位置，避免上电窜动。MT6701 是单圈，掉电后不保留多圈计数。
 
 `CFG_POLE_PAIRS` 只是校准前的初值；真正使用的极对数以本次测量（或 Flash 记录）为准。锁不住或转角不够会报 `cali: pp bad`。
 
@@ -104,7 +105,7 @@ t_ref = clamp(t_ref, -V_LIMIT, +V_LIMIT)
 
 ## CAN 协议
 
-Motor CAN Protocol V1.0，Classic CAN 1 Mbps，**小端**，Motor ID = 1~63（默认 1）。
+Motor CAN Protocol V1.0，Classic CAN 1 Mbps，**小端**，Motor ID = 1~63。出厂默认 `CFG_NODE_ID`（1）；成功改 ID 后写入校准同一 Flash 页，上电加载。`SET_NODE_ID`（`0x200+ID`，Byte0=`0x07`，Byte2=新 ID）成功则旧 ID 回 ACK 后复位。上位机收到 ACK 后自动改用新 ID。
 
 | CAN ID | 方向 | 本固件 |
 |------|------|------|
@@ -112,7 +113,7 @@ Motor CAN Protocol V1.0，Classic CAN 1 Mbps，**小端**，Motor ID = 1~63（�
 | `0x140+ID` | 主机→电机 | Velocity Mode Command |
 | `0x180+ID` | 主机→电机 | Control Gains（MOTION / VELOCITY / POSITION 三组） |
 | `0x1C0+ID` | 主机→电机 | Position Mode Command |
-| `0x200+ID` | 主机→电机 | Management：SET_ZERO / CLEAR_FAULT / START_CALI / GET_STATUS / SET_CONTROL_MODE |
+| `0x200+ID` | 主机→电机 | Management：SET_ZERO / CLEAR_FAULT / START_CALI / GET_STATUS / SET_CONTROL_MODE / SET_NODE_ID |
 | `0x280+ID` | 电机→主机 | Command ACK |
 | `0x300+ID` | 电机→主机 | Motion Feedback |
 | `0x380+ID` | 电机→主机 | Status Response（母线电压实测；温度填 0） |
@@ -129,6 +130,8 @@ Motion `0x100+ID`：
 Gains `0x180+ID`：Byte0=Control Mode，Byte1=Sequence。MOTION：Kp `0.01 pu/rad`，Ki=0，Kd `0.001 pu·s/rad`。VELOCITY：Kp `0.001 pu/(rad/s)`，Ki `0.001 pu/rad`，Kd=0。POSITION：外环 Kp `0.01 s⁻¹`，Ki `0.001 s⁻²`，Kd `0.001`。位置内环使用 VELOCITY 那组 PI。
 
 `SET_CONTROL_MODE` 可在 RUNNING 下切换三模式；切换后清积分，电压为 0 直到收到新模式的有效实时命令。上电默认 MOTION。
+
+`SET_NODE_ID`：Byte2=1~63。写 Flash 保留校准，ACK Byte6=新 ID，约 20 ms 后复位。也可 PB3 长按进入改 ID。忘了 ID 时看灯闪或用按键。
 
 `START_ENCODER_CALIBRATION`（`0x200+ID`，Byte0=`0x05`）：因本固件无 ENABLE/DISABLE，**RUNNING 下可直接启动**（协议原文要求 DISABLED）。先 ACK `OK` 且 State=`CALIBRATING`，随后 `0x3C0+ID` 约 50 ms 上报进度。成功后回到 **RUNNING**（协议原文是 DISABLED）。失败进入 FAULT + `CALIBRATION_FAULT`，需 `CLEAR_FAULT` 后再发校准。上电无 NV 时同样走这条流程并上报，Sequence=0，没有 Command ACK。校准过程阻塞主循环数秒，期间实时命令会被丢弃。
 
@@ -190,7 +193,7 @@ macOS / slcan：`--interface slcan --channel /dev/cu.usbserial` 或 Windows `COM
 
 ## 调试
 
-SEGGER RTT（SWD）。LC-ESC 的 PB3 是按键，不要用 SWO。主循环约 200 ms 打印一次 `p/v/t/kp/kd`（整数毫弧度等）。
+SEGGER RTT（SWD）。LC-ESC 的 PB3 是按键（改 CAN ID），不要用 SWO。主循环约 200 ms 打印一次 `p/v/t/kp/kd`（整数毫弧度等）。
 
 ## 注意
 

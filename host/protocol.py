@@ -27,6 +27,7 @@ CMD_SET_ZERO = 0x03
 CMD_CLEAR_FAULT = 0x04
 CMD_START_CALI = 0x05
 CMD_SET_MODE = 0x06
+CMD_SET_NODE_ID = 0x07
 CMD_GET_STATUS = 0x10
 CMD_SET_GAINS = 0x20
 
@@ -71,6 +72,7 @@ CMD_NAME = {
     CMD_CLEAR_FAULT: "CLEAR_FAULT",
     CMD_START_CALI: "START_CALI",
     CMD_SET_MODE: "SET_CONTROL_MODE",
+    CMD_SET_NODE_ID: "SET_NODE_ID",
     CMD_GET_STATUS: "GET_STATUS",
     CMD_SET_GAINS: "SET_GAINS",
 }
@@ -200,6 +202,7 @@ def unpack_ack(data: bytes) -> dict[str, int | str]:
         "state_name": STATE_NAME.get(state, f"0x{state:02X}"),
         "fault": fault,
         "fault_name": fault_name(fault),
+        "new_id": data[6],
     }
 
 

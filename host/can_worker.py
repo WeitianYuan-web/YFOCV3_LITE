@@ -17,7 +17,8 @@ class CanWorker(threading.Thread):
     def __init__(self, bus: can.BusABC, node_id: int, rx_q: queue.Queue) -> None:
         super().__init__(daemon=True)
         self.bus = bus
-        self.ids = proto.ids(node_id)
+        self.node_id = max(1, min(63, int(node_id)))
+        self.ids = proto.ids(self.node_id)
         self.rx_q = rx_q
         self.tx_q: queue.Queue = queue.Queue()
         self._stop = threading.Event()
@@ -42,6 +43,19 @@ class CanWorker(threading.Thread):
 
     def send(self, can_id: int, data: bytes) -> None:
         self.tx_q.put((can_id, data))
+
+    def set_node_id(self, node_id: int) -> None:
+        new_id = max(1, min(63, int(node_id)))
+        new_ids = proto.ids(new_id)
+        with self._lock:
+            old_ids = self.ids
+            if self._cyclic:
+                for key in ("motion", "vel", "pos"):
+                    if self._cyclic_id == old_ids[key]:
+                        self._cyclic_id = new_ids[key]
+                        break
+            self.node_id = new_id
+            self.ids = new_ids
 
     def stop(self) -> None:
         self._stop.set()

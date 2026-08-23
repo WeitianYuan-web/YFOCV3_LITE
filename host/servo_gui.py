@@ -106,6 +106,7 @@ class HostWindow(QMainWindow):
         self._vel_snap = 0.0
         self._pos_snap = (0.0, 100.0)
         self._snap_lock = threading.Lock()
+        self._pending_node_id: int | None = None
         self._build()
         self._timer = QTimer(self)
         self._timer.setInterval(30)
@@ -419,9 +420,20 @@ class HostWindow(QMainWindow):
         mode_row.addWidget(btn)
         mode_row.addStretch(1)
         lay.addLayout(mode_row)
+        id_row = QHBoxLayout()
+        id_row.addWidget(QLabel("SET_NODE_ID"))
+        self.ed_new_id = QLineEdit("2")
+        self.ed_new_id.setMaximumWidth(56)
+        id_row.addWidget(self.ed_new_id)
+        btn_id = QPushButton("发送")
+        btn_id.clicked.connect(self.send_set_node_id)
+        id_row.addWidget(btn_id)
+        id_row.addStretch(1)
+        lay.addLayout(id_row)
         hint = QLabel(
-            "上电默认 POSITION。ENABLE/DISABLE 仍返回 INVALID_COMMAND。"
-            "校准前先停止循环发送。"
+            "上电默认 MOTION。ENABLE/DISABLE 仍返回 INVALID_COMMAND。"
+            "SET_NODE_ID 成功后电机会复位，上位机自动改用新 ID。"
+            "校准前先停止循环发送。PB3 长按也可改 ID，灯闪十位长/个位短。"
         )
         hint.setObjectName("scopeHint")
         hint.setWordWrap(True)
@@ -461,13 +473,31 @@ class HostWindow(QMainWindow):
         self.rx_q = queue.Queue()
         self.worker = CanWorker(bus, node_id, self.rx_q)
         self.worker.start()
+        self._set_conn_label(iface, channel, node_id)
+        self._log(f"connected iface={iface} ch={channel} bitrate={self.cmb_bitrate.currentText()} id={node_id}")
+
+    def _set_conn_label(self, iface: str, channel: str, node_id: int) -> None:
         self.lbl_conn.setText(f"已连接  {iface}:{channel}  ID={node_id}")
         self.lbl_conn.setObjectName("connOk")
         self.lbl_conn.style().unpolish(self.lbl_conn)
         self.lbl_conn.style().polish(self.lbl_conn)
-        self._log(f"connected iface={iface} ch={channel} bitrate={self.cmb_bitrate.currentText()} id={node_id}")
+
+    def _adopt_node_id(self, node_id: int) -> None:
+        if self.worker is None:
+            return
+        old = self.worker.node_id
+        self.worker.set_node_id(node_id)
+        self.ed_id.setText(str(node_id))
+        self._set_conn_label(
+            self.cmb_iface.currentText().strip(),
+            self.cmb_ch.currentText().strip(),
+            node_id,
+        )
+        self._log(f"host ID {old} → {node_id}")
+        QTimer.singleShot(500, self._confirm_new_id)
 
     def disconnect_bus(self) -> None:
+        self._pending_node_id = None
         if self.worker is not None:
             self.worker.set_cyclic(False, 1.0, 0, lambda: proto.pack_motion(0.0, 0.0, 0.0))
             self.worker.stop()
@@ -653,6 +683,32 @@ class HostWindow(QMainWindow):
         w.send(w.ids["mgmt"], proto.pack_mgmt(proto.CMD_SET_MODE, seq, mode))
         self._log(f"TX SET_CONTROL_MODE {self.cmb_set_mode.currentText()} seq={seq}")
 
+    def send_set_node_id(self) -> None:
+        w = self._need_worker()
+        if w is None:
+            return
+        try:
+            new_id = int(self.ed_new_id.text().strip())
+        except ValueError:
+            QMessageBox.critical(self, "参数错误", "新 ID 必须是 1~63 的整数")
+            return
+        if new_id < 1 or new_id > 63:
+            QMessageBox.critical(self, "参数错误", "新 ID 必须是 1~63")
+            return
+        self.stop_cyclic()
+        seq = self._next_seq()
+        self._pending_node_id = new_id
+        w.send(w.ids["mgmt"], proto.pack_mgmt(proto.CMD_SET_NODE_ID, seq, new_id))
+        self._log(f"TX SET_NODE_ID {w.node_id} → {new_id} seq={seq}")
+
+    def _confirm_new_id(self) -> None:
+        w = self.worker
+        if w is None:
+            return
+        seq = self._next_seq()
+        w.send(w.ids["mgmt"], proto.pack_mgmt(proto.CMD_GET_STATUS, seq))
+        self._log(f"TX GET_STATUS id={w.node_id} seq={seq} (after SET_NODE_ID)")
+
     def _poll_rx(self) -> None:
         try:
             self._refresh_snap()
@@ -678,10 +734,19 @@ class HostWindow(QMainWindow):
                 elif kind == "ack":
                     self.val_state.setText(str(payload["state_name"]))
                     self.val_fault.setText(str(payload["fault_name"]))
+                    extra = ""
+                    if payload["cmd"] == proto.CMD_SET_NODE_ID:
+                        extra = f" new_id={payload['new_id']}"
+                        if payload["result"] == 0 and self._pending_node_id is not None:
+                            adopted = int(payload["new_id"] or self._pending_node_id)
+                            self._pending_node_id = None
+                            self._adopt_node_id(adopted)
+                        elif payload["result"] != 0:
+                            self._pending_node_id = None
                     self._log(
                         f"ACK {payload['cmd_name']} seq={payload['seq']} "
                         f"{payload['result_name']} state={payload['state_name']} "
-                        f"fault={payload['fault_name']}"
+                        f"fault={payload['fault_name']}{extra}"
                     )
                 elif kind == "status":
                     self.val_state.setText(str(payload["state_name"]))

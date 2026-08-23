@@ -60,6 +60,12 @@ static void Board_GpioInit(void)
   GPIO_InitStruct.Pin = GPIO_PIN_4;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = GPIO_PIN_3;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 }
 
 static void Board_FdcanInit(void)
@@ -341,6 +347,11 @@ void Board_LedSet(uint8_t on)
 void Board_LedToggle(void)
 {
   HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+}
+
+uint8_t Board_ButtonRaw(void)
+{
+  return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3) == GPIO_PIN_RESET) ? 1U : 0U;
 }
 
 void Error_Handler(void)

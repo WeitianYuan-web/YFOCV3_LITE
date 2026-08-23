@@ -18,6 +18,7 @@ uint32_t Board_DwtGetCycles(void);
 uint32_t Board_DwtCyclesToNs(uint32_t cycles);
 void Board_LedSet(uint8_t on);
 void Board_LedToggle(void);
+uint8_t Board_ButtonRaw(void);
 void Error_Handler(void);
 
 #ifdef __cplusplus

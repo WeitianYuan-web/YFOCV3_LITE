@@ -6,6 +6,8 @@ extern "C" {
 #endif
 
 #define CFG_NODE_ID                 (1U)
+#define CFG_NODE_ID_MIN             (1U)
+#define CFG_NODE_ID_MAX             (63U)
 #define CFG_POLE_PAIRS              (14U)
 
 #define CFG_ENCODER_MT6701          (0U)
