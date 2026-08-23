@@ -220,7 +220,7 @@ static uint8_t Comm_ParseMotion(const uint8_t *d, float *p, float *v, float *ff)
 
   *p = (float)Comm_ReadI32Le(&d[0]) * CFG_POS_LSB;
   *v = Foc_Clamp(vel, CFG_VEL_CMD_MIN, CFG_VEL_CMD_MAX);
-  *ff = (float)Comm_ReadU16Le(&d[6]) / 65535.0f;
+  *ff = Foc_Clamp((float)((int16_t)Comm_ReadU16Le(&d[6])) / 32767.0f, -1.0f, 1.0f);
   return 1U;
 }
 

@@ -138,9 +138,9 @@ def clamp_u16(v: int) -> int:
 def pack_motion(pos: float, vel: float, vff: float) -> bytes:
     pos_raw = int(round(pos / POS_LSB))
     vel_raw = clamp_i16(int(round(vel / VEL_LSB)))
-    vff = min(max(float(vff), 0.0), 1.0)
-    ff_raw = int(round(vff * 65535.0))
-    return struct.pack("<ihH", pos_raw, vel_raw, ff_raw)
+    vff = min(max(float(vff), -1.0), 1.0)
+    ff_raw = clamp_i16(int(round(vff * 32767.0)))
+    return struct.pack("<ihh", pos_raw, vel_raw, ff_raw)
 
 
 def pack_velocity(vel: float) -> bytes:

@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vel", type=float, default=0.0, help="target velocity rad/s")
     parser.add_argument("--kp", type=float, default=0.0)
     parser.add_argument("--kd", type=float, default=0.0)
-    parser.add_argument("--ff", type=float, default=0.0, help="voltage feedforward 0..1")
+    parser.add_argument("--ff", type=float, default=0.0, help="voltage feedforward -1..1")
     parser.add_argument("--rate", type=float, default=200.0, help="motion TX rate Hz")
     parser.add_argument("--listen", action="store_true", help="only parse bus frames")
     parser.add_argument("--once", action="store_true", help="send setup + one motion frame, then exit")

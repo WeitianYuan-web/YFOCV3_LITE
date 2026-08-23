@@ -277,7 +277,7 @@ class HostWindow(QMainWindow):
             [
                 ("位置 rad", self.ed_m_pos),
                 ("速度 rad/s", self.ed_m_vel),
-                ("Voltage FF 0~1", self.ed_m_ff),
+                ("Voltage FF -1~1", self.ed_m_ff),
                 ("循环频率 Hz", self.ed_m_rate),
             ],
         )

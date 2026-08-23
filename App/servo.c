@@ -374,7 +374,7 @@ void Servo_SetMotion(float p_set, float v_set, float t_ff)
   __disable_irq();
   s_p_set = p_set;
   s_v_set = Foc_Clamp(v_set, CFG_VEL_CMD_MIN, CFG_VEL_CMD_MAX);
-  s_t_ff = t_ff;
+  s_t_ff = Foc_Clamp(t_ff, -1.0f, 1.0f);
   s_cmd_valid = 1U;
   __set_PRIMASK(primask);
 }

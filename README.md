@@ -125,7 +125,7 @@ Motion `0x100+ID`：
 |------|------|------|
 | 0-3 | 目标位置 | `int32`，`0.0001 rad/LSB` |
 | 4-5 | 目标速度 | `int16`，`0.1 rad/s/LSB` |
-| 6-7 | Voltage FF | `uint16`，`raw/65535` → 0~1 |
+| 6-7 | Voltage FF | `int16`，`raw/32767` → −1~1 |
 
 Gains `0x180+ID`：Byte0=Control Mode，Byte1=Sequence。MOTION：Kp `0.01 pu/rad`，Ki=0，Kd `0.001 pu·s/rad`。VELOCITY：Kp `0.001 pu/(rad/s)`，Ki `0.001 pu/rad`，Kd=0。POSITION：外环 Kp `0.01 s⁻¹`，Ki `0.001 s⁻²`，Kd `0.001`。位置内环使用 VELOCITY 那组 PI。
 

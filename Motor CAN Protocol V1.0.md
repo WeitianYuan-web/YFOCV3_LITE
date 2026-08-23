@@ -10,7 +10,7 @@
 
 | 项目 | 说明 |
 |---|---|
-| Motion `0x100` | 电压模式：Position / Velocity / `VoltageFF = Raw/65535`；有效帧后回 `0x300`；同一次 RX 处理只执行最后一帧有效实时命令 |
+| Motion `0x100` | 电压模式：Position / Velocity / `VoltageFF = int16/32767`（−1~1）；有效帧后回 `0x300`；同一次 RX 处理只执行最后一帧有效实时命令 |
 | Velocity `0x140` | 电压 PI：`u = Kp e_v + Ki ∫e_v`；积分对 `±V_LIMIT` 钳位抗饱和 |
 | Position `0x1C0` | 位置 PID 外环 + 速度 PI 内环（内环用 VELOCITY Gains）；外环积分对 `±vmax` 钳位，内环电压饱和时冻结外环积分 |
 | Gains `0x180` | 三组都接受。MOTION：Ki=0；VELOCITY：Kd=0；POSITION：外环 Kp/Ki/Kd |
@@ -166,7 +166,7 @@ Raw = 65535   → VoltageFF = 1.0
 
 其实际电压由固件的母线电压、调制方式和电压限幅决定。主机必须根据目标固件的输出模式编码 Byte6~7，不能将转矩模式的 `int16` 数值直接用于电压模式。
 
-> **本固件：** 固定电压模式。`VoltageFF` 按上表 `uint16 / 65535`。速度按协议 `int16 × 0.1 rad/s` 接收（约 `±3276.7`），超出则钳位，仍执行并回 Feedback。电压指令再限幅 `CFG_V_LIMIT`。
+> **本固件：** 固定电压模式。`VoltageFF` 按 `int16 / 32767`，范围 `−1.0 ~ 1.0`（与原文 `uint16 / 65535 → 0~1` 不兼容）。速度按协议 `int16 × 0.1 rad/s` 接收（约 `±3276.7`），超出则钳位，仍执行并回 Feedback。`t_ref` 再限幅 `CFG_V_LIMIT`。
 
 转矩模式控制律：
 
