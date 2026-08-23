@@ -60,11 +60,12 @@ openocd -s /path/to/openocd/scripts -f scripts/openocd-stm32g431.cfg \
 | TIM1 PWM 高侧 | PA8 / PA9 / PA10 |
 | TIM1 PWM 低侧 | PB13 / PB14 / PB15 |
 | SPI1 编码器 | PA5/6/7，CS=PA4（`CFG_ENCODER_TYPE`：MT6701 SSI 或 KTH7812 SPI Mode3） |
+| 母线电压 | PB0 / ADC1_IN15，`Vbus = Vadc × 31.3` |
 | FDCAN1 | PA11 / PA12，Classic 1 Mbps |
 | LED | PC13，高电平亮 |
 | 时钟 | HSE 32 MHz → 170 MHz |
 
-PWM 20 kHz 中心对齐；TIM6 4 kHz 运控；无电流采样。
+PWM 20 kHz 中心对齐；TIM6 4 kHz 运控。母线电压走 ADC1 规则组（软件触发，约 5 ms）；注入组空着，留给以后的 20 kHz 电流，运行中不换通道、不停 ADC。当前无电流采样。
 
 ## 上电校准
 
@@ -114,7 +115,7 @@ Motor CAN Protocol V1.0，Classic CAN 1 Mbps，**小端**，Motor ID = 1~63（�
 | `0x200+ID` | 主机→电机 | Management：SET_ZERO / CLEAR_FAULT / START_CALI / GET_STATUS / SET_CONTROL_MODE |
 | `0x280+ID` | 电机→主机 | Command ACK |
 | `0x300+ID` | 电机→主机 | Motion Feedback |
-| `0x380+ID` | 电机→主机 | Status Response（母线电压/温度填 0） |
+| `0x380+ID` | 电机→主机 | Status Response（母线电压实测；温度填 0） |
 | `0x3C0+ID` | 电机→主机 | Encoder Calibration Report（约 50 ms） |
 
 Motion `0x100+ID`：

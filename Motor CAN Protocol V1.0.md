@@ -14,7 +14,7 @@
 | Velocity `0x140` | 电压 PI：`u = Kp e_v + Ki ∫e_v`；积分对 `±V_LIMIT` 钳位抗饱和 |
 | Position `0x1C0` | 位置 PID 外环 + 速度 PI 内环（内环用 VELOCITY Gains）；外环积分对 `±vmax` 钳位，内环电压饱和时冻结外环积分 |
 | Gains `0x180` | 三组都接受。MOTION：Ki=0；VELOCITY：Kd=0；POSITION：外环 Kp/Ki/Kd |
-| SET_ZERO / GET_STATUS / SET_CONTROL_MODE | 已接入；上电默认 `MOTION_MODE`；`RUNNING` 下可切换三模式 |
+| SET_ZERO / GET_STATUS / SET_CONTROL_MODE | 已接入；上电默认 `MOTION_MODE`；`RUNNING` 下可切换三模式；`GET_STATUS` 母线电压为 PB0 实测 |
 | CLEAR_FAULT | 可清除闩锁的 `CALIBRATION_FAULT` |
 | START_ENCODER_CALIBRATION + `0x3C0` | 先 ACK 再校准；约 50 ms 上报，Stage 变化立即多发一帧 |
 | 非实时重发 | 相同 Command+Sequence 重发缓存应答，不重复执行 |
@@ -40,7 +40,7 @@
 |---|---|
 | `ENABLE` `0x01` / `DISABLE` `0x02` | `INVALID_COMMAND` |
 | 转矩模式编码（Motion FF / Gains / Feedback） | 本固件固定为电压模式 |
-| 母线电压、电机温度、Warning 位 | `GET_STATUS` 对应字段填 0 |
+| 电机温度、Warning 位 | `GET_STATUS` 对应字段填 0 |
 | 过温/过流/过压/欠压/堵转等故障检测 | 不置位；目前仅使用 `CALIBRATION_FAULT` |
 | `0x380` 主动 Fault Event | 不主动上报，仅响应 `GET_STATUS` |
 | 校准错误码 `INVALID_STATE` / `TIMEOUT` / `MOTOR_CONTROL_ERROR` / `INTERNAL_ERROR` | 未使用；现用 `ENCODER_SIGNAL_ERROR`、`CALIBRATION_DATA_INVALID`、`PARAMETER_SAVE_FAILED` |
@@ -949,7 +949,7 @@ CLEAR_FAULT
 
 # 12. GET_STATUS
 
-> **本固件：** 校准阻塞期间不会应答本命令。母线电压、温度、Warning 填 0。校准结束后才处理积压帧。
+> **本固件：** 校准阻塞期间不会应答本命令。温度、Warning 填 0；母线电压见第 15 节。校准结束后才处理积压帧。
 
 请求：
 
@@ -1065,7 +1065,7 @@ bit11~15 Reserved
 
 # 15. Bus Voltage
 
-> **本固件：未实现。** `GET_STATUS` 填 0。
+> **本固件：** `GET_STATUS` 填 PB0/ADC1_IN15 实测母线：`Vbus = raw/4095 × 3.3 × 31.3`，再按 `0.01 V/LSB` 编码。规则组软件触发，约 5 ms 更新；注入组留给以后的 20 kHz 电流。运行中不改通道、不关 ADC。
 
 ```text
 uint16

@@ -1,5 +1,6 @@
 #include "comm.h"
 
+#include "adc.h"
 #include "cali.h"
 #include "can.h"
 #include "config.h"
@@ -168,8 +169,20 @@ static void Comm_SendAck(uint8_t cmd, uint8_t seq, uint8_t result)
 static void Comm_SendStatus(uint8_t seq)
 {
   uint8_t data[8] = {0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U};
+  int32_t vbus_raw;
+
   data[0] = s_state;
   Comm_WriteU16Le(&data[1], s_fault);
+  vbus_raw = Comm_FloatToI32(Adc_GetVbusVolts(), CFG_VBUS_LSB);
+  if (vbus_raw < 0)
+  {
+    vbus_raw = 0;
+  }
+  if (vbus_raw > 65535)
+  {
+    vbus_raw = 65535;
+  }
+  Comm_WriteU16Le(&data[3], (uint16_t)vbus_raw);
   data[7] = (uint8_t)((Servo_GetCtrlMode() & 0x03U) << 5);
   Comm_CacheSend(CFG_CAN_STATUS_BASE + CFG_NODE_ID, COMM_CMD_GET_STATUS, seq, data);
 }

@@ -54,6 +54,9 @@ void SysTick_Handler(void)
   HAL_IncTick();
 }
 
+/* ADC1 injected EOC will belong to a future 20 kHz current trigger.
+ * Vbus stays on ADC1 regular and must not steal that IRQ. */
+
 void TIM1_UP_TIM16_IRQHandler(void)
 {
   if ((TIM1->SR & TIM_SR_UIF) != 0U)

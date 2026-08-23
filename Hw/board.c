@@ -1,4 +1,5 @@
 #include "board.h"
+#include "adc.h"
 #include "config.h"
 
 FDCAN_HandleTypeDef hfdcan1;
@@ -312,6 +313,7 @@ void Board_Init(void)
   Board_Tim1Init();
   Board_Tim6Init();
   Board_DwtInit();
+  Adc_Init();
 }
 
 void Board_DwtInit(void)

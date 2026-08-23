@@ -25,6 +25,12 @@ extern "C" {
 #define CFG_V_SLEW_PU_S             (100.0f)   /* max |d(Vd,Vq)/dt|, pu/s */
 #define CFG_VEL_LPF_HZ              (500.0f)  /* 2nd-order Butterworth on d(theta_e)/dt */
 
+#define CFG_ADC_VREF_V              (3.3f)
+#define CFG_ADC_FULLSCALE           (4095.0f)
+#define CFG_VBUS_SCALE              (31.3f)   /* Vbus = Vadc * 31.3 */
+#define CFG_VBUS_LSB                (0.01f)
+#define CFG_VBUS_POLL_MS            (5U)
+
 #define CFG_CAN_MOTION_BASE         (0x100U)
 #define CFG_CAN_VEL_BASE            (0x140U)
 #define CFG_CAN_GAINS_BASE          (0x180U)

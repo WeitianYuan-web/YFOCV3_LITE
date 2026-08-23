@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #define HAL_MODULE_ENABLED
+#define HAL_ADC_MODULE_ENABLED
 #define HAL_FDCAN_MODULE_ENABLED
 #define HAL_SPI_MODULE_ENABLED
 #define HAL_TIM_MODULE_ENABLED
@@ -88,6 +89,9 @@ extern "C" {
 #endif
 #ifdef HAL_DMA_MODULE_ENABLED
 #include "stm32g4xx_hal_dma.h"
+#endif
+#ifdef HAL_ADC_MODULE_ENABLED
+#include "stm32g4xx_hal_adc.h"
 #endif
 #ifdef HAL_CORTEX_MODULE_ENABLED
 #include "stm32g4xx_hal_cortex.h"

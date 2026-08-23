@@ -1,3 +1,4 @@
+#include "adc.h"
 #include "board.h"
 #include "cali.h"
 #include "can.h"
@@ -41,6 +42,7 @@ int main(void)
     uint32_t now;
 
     Can_Service();
+    Adc_Service();
     Comm_Process();
 
     now = HAL_GetTick();
@@ -49,13 +51,14 @@ int main(void)
       ServoTelemetry_t tel;
       last_dbg_ms = now;
       Servo_GetTelemetry(&tel);
-      Dbg_Printf("m=%d p=%d v=%d t=%d kp=%d kd=%d\r\n",
+      Dbg_Printf("m=%d p=%d v=%d t=%d kp=%d kd=%d vbus=%d\r\n",
                  (int)tel.ctrl_mode,
                  (int)(tel.p_act * 1000.0f),
                  (int)(tel.v_act * 1000.0f),
                  (int)(tel.t_ref * 1000.0f),
                  (int)(tel.kp * 10.0f),
-                 (int)(tel.kd * 1000.0f));
+                 (int)(tel.kd * 1000.0f),
+                 (int)(Adc_GetVbusVolts() * 100.0f));
       if (cali_ok == 0U)
       {
         Board_LedToggle();

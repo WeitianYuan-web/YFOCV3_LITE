@@ -41,10 +41,13 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Hw/encoder.c
     Hw/can.c
     Hw/debug.c
+    Hw/adc.c
     Hw/RTT/SEGGER_RTT.c
     Hw/RTT/SEGGER_RTT_printf.c
 
     ${HAL_DIR}/Src/stm32g4xx_hal.c
+    ${HAL_DIR}/Src/stm32g4xx_hal_adc.c
+    ${HAL_DIR}/Src/stm32g4xx_hal_adc_ex.c
     ${HAL_DIR}/Src/stm32g4xx_hal_cortex.c
     ${HAL_DIR}/Src/stm32g4xx_hal_dma.c
     ${HAL_DIR}/Src/stm32g4xx_hal_dma_ex.c
