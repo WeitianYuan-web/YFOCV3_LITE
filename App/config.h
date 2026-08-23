@@ -68,18 +68,19 @@ extern "C" {
 #define CFG_KD_POS_MAX              (5.0f)
 
 #define CFG_CALI_LOCK_V             (0.05f)
-#define CFG_CALI_LOCK_MS            (500U)
-#define CFG_CALI_ROTATE_ELEC_RAD_S  (1.5707963267948966f) /* 0.25 elec rev/s */
-#define CFG_CALI_PP_ELEC_REVS       (6U)   /* per direction */
-#define CFG_CALI_ROTATE_MS          (4000U * CFG_CALI_PP_ELEC_REVS) /* 2π/rate = 4 s/rev */
+#define CFG_CALI_LOCK_MS            (300U)
+#define CFG_CALI_ROTATE_ELEC_RAD_S  (3.141592653589793f) /* 0.5 elec rev/s */
+#define CFG_CALI_PP_ELEC_REVS       (4U)   /* per direction; both ways still 8 elec revs */
+#define CFG_CALI_ROTATE_MS          (2000U * CFG_CALI_PP_ELEC_REVS) /* 2π/rate = 2 s/rev */
 #define CFG_CALI_ROTATE_SAMPLE_MS   (10U)
-#define CFG_CALI_OFFSET_SKIP_MS     (400U)
+#define CFG_CALI_OFFSET_SKIP_MS     (250U)
+#define CFG_CALI_SETTLE_MS          (40U)
 #define CFG_CALI_MIN_MECH_DELTA     (0.05f)
 #define CFG_CALI_PP_MIN             (2U)
 #define CFG_CALI_PP_MAX             (30U)
 #define CFG_CALI_PP_MAX_RESIDUAL    (0.40f)
 #define CFG_CALI_PROBE_VQ           (0.05f)
-#define CFG_CALI_PROBE_MS           (600U)
+#define CFG_CALI_PROBE_MS           (400U)
 #define CFG_CALI_MIN_VEL            (0.3f)
 #define CFG_CALI_REPORT_MS          (50U)
 

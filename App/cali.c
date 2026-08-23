@@ -283,7 +283,7 @@ static uint8_t Cali_Run(void)
     Cali_Fail("cali: enc fail", CALI_ERR_ENCODER);
     return 0U;
   }
-  Cali_Delay(80U);
+  Cali_Delay(CFG_CALI_SETTLE_MS);
 
   Cali_SetReport(CALI_ST_RUNNING, 40U, CALI_STAGE_SAMPLE, CALI_ERR_NONE);
   if (Cali_RotateMeasure(-CFG_CALI_ROTATE_ELEC_RAD_S, &d_rev, &offacc) == 0U)
@@ -291,7 +291,7 @@ static uint8_t Cali_Run(void)
     Cali_Fail("cali: enc fail", CALI_ERR_ENCODER);
     return 0U;
   }
-  Cali_Delay(80U);
+  Cali_Delay(CFG_CALI_SETTLE_MS);
 
   if ((Cali_Absf(d_fwd) < CFG_CALI_MIN_MECH_DELTA) ||
       (Cali_Absf(d_rev) < CFG_CALI_MIN_MECH_DELTA))
@@ -396,7 +396,7 @@ static uint8_t Cali_Run(void)
     }
     vel = Foc_EncoderGetVelocity(Servo_GetEncoder());
     Servo_SetVoltageCmd(0.0f, 0.0f);
-    Cali_Delay(80U);
+    Cali_Delay(CFG_CALI_SETTLE_MS);
     Dbg_Printf("cali: probe d=%d v=%d\r\n", (int)(acc * 1000.0f), (int)(vel * 1000.0f));
     if ((acc > -CFG_CALI_MIN_MECH_DELTA) && (acc < CFG_CALI_MIN_MECH_DELTA))
     {
