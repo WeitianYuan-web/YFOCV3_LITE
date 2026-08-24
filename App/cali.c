@@ -294,32 +294,34 @@ static uint8_t Cali_Run(void)
   }
   Cali_Delay(CFG_CALI_SETTLE_MS);
 
-  if ((Cali_Absf(d_fwd) < CFG_CALI_MIN_MECH_DELTA) ||
-      (Cali_Absf(d_rev) < CFG_CALI_MIN_MECH_DELTA))
-  {
-    Cali_Fail("cali: no motion", CALI_ERR_DATA);
-    return 0U;
-  }
-  if ((d_fwd * d_rev) > 0.0f)
-  {
-    Cali_Fail("cali: dir mismatch", CALI_ERR_DATA);
-    return 0U;
-  }
-
-  if (d_fwd < 0.0f)
-  {
-    encoder_dir = -1;
-  }
-
   {
     const float elec_one = CFG_CALI_ROTATE_ELEC_RAD_S *
                            ((float)CFG_CALI_ROTATE_MS / 1000.0f);
     const float abs_avg = 0.5f * (Cali_Absf(d_fwd) + Cali_Absf(d_rev));
     const float pp_f = (abs_avg > 1.0e-6f) ? (elec_one / abs_avg) : 0.0f;
+
     Dbg_Printf("cali: df=%d dr=%d ppx100=%d\r\n",
                (int)(d_fwd * 1000.0f),
                (int)(d_rev * 1000.0f),
                (int)(pp_f * 100.0f));
+
+    if ((Cali_Absf(d_fwd) < CFG_CALI_MIN_MECH_DELTA) ||
+        (Cali_Absf(d_rev) < CFG_CALI_MIN_MECH_DELTA))
+    {
+      Cali_Fail("cali: no motion", CALI_ERR_DATA);
+      return 0U;
+    }
+    if ((d_fwd * d_rev) > 0.0f)
+    {
+      Cali_Fail("cali: dir mismatch", CALI_ERR_DATA);
+      return 0U;
+    }
+
+    if (d_fwd < 0.0f)
+    {
+      encoder_dir = -1;
+    }
+
     if (Cali_EstimatePolePairs(abs_avg, elec_one, &pole_pairs) == 0U)
     {
       Cali_Fail("cali: pp bad", CALI_ERR_DATA);

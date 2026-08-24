@@ -23,7 +23,6 @@ int main(void)
   Can_Init(Node_GetId());
 
   Dbg_Printf("YFOCV3 LC-ESC voltage servo\r\n");
-  Servo_PrintStartupTiming();
   Pwm_StartTimer();
   Board_LedSet(1U);
   cali_ok = Cali_Start();

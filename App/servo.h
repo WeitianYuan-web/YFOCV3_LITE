@@ -37,7 +37,6 @@ typedef struct
 } ServoTelemetry_t;
 
 void Servo_Init(void);
-void Servo_PrintStartupTiming(void);
 void Servo_OnPwmIsr(void);
 void Servo_OnCtrlIsr(void);
 

@@ -1,8 +1,6 @@
 #include "servo.h"
 
-#include "board.h"
 #include "config.h"
-#include "debug.h"
 #include "encoder.h"
 #include "foc_math.h"
 #include "foc_svpwm.h"
@@ -143,11 +141,9 @@ void Servo_Init(void)
   s_q_out = 0.0f;
 }
 
-static void Servo_RunPwmPathOnce(void)
+static void Servo_ApplyEncoderSample(uint8_t ok, uint16_t raw)
 {
-  uint16_t raw;
-
-  if (Encoder_ReadRawFast(&raw) != 0U)
+  if (ok != 0U)
   {
     const float mech = ((float)raw * FOC_TWO_PI) / (float)ENCODER_CPR;
     (void)Foc_EncoderUpdate(&s_enc, mech, CFG_PWM_DT_S);
@@ -156,66 +152,16 @@ static void Servo_RunPwmPathOnce(void)
   {
     Foc_EncoderPredict(&s_enc, CFG_PWM_DT_S);
   }
-  Servo_ApplyDq(0.0f, 0.0f, Foc_EncoderGetElectrical(&s_enc));
-}
-
-void Servo_PrintStartupTiming(void)
-{
-  const uint32_t n = 1000U;
-  uint16_t raw;
-  uint32_t t0;
-  uint32_t enc_cyc;
-  uint32_t foc_cyc;
-  uint64_t enc_sum = 0ULL;
-  uint64_t foc_sum = 0ULL;
-  uint32_t primask;
-  uint32_t i;
-
-  Board_DwtInit();
-  for (i = 0U; i < 3U; i++)
-  {
-    (void)Encoder_ReadRawFast(&raw);
-    Servo_RunPwmPathOnce();
-  }
-
-  primask = __get_PRIMASK();
-  __disable_irq();
-  for (i = 0U; i < n; i++)
-  {
-    t0 = Board_DwtGetCycles();
-    (void)Encoder_ReadRawFast(&raw);
-    enc_sum += (uint64_t)(Board_DwtGetCycles() - t0);
-    t0 = Board_DwtGetCycles();
-    Servo_RunPwmPathOnce();
-    foc_sum += (uint64_t)(Board_DwtGetCycles() - t0);
-  }
-  __set_PRIMASK(primask);
-
-  enc_cyc = (uint32_t)(enc_sum / (uint64_t)n);
-  foc_cyc = (uint32_t)(foc_sum / (uint64_t)n);
-  Dbg_Printf("dwt: n=%u enc=%u cyc %u ns  foc=%u cyc %u ns  pwm=%u us\r\n",
-             (unsigned)n,
-             (unsigned)enc_cyc,
-             (unsigned)Board_DwtCyclesToNs(enc_cyc),
-             (unsigned)foc_cyc,
-             (unsigned)Board_DwtCyclesToNs(foc_cyc),
-             (unsigned)(1000000UL / CFG_PWM_HZ));
 }
 
 void Servo_OnPwmIsr(void)
 {
   uint16_t raw;
+  uint8_t ok;
   ServoMode_t mode = s_mode;
 
-  if (Encoder_ReadRawFast(&raw) != 0U)
-  {
-    const float mech = ((float)raw * FOC_TWO_PI) / (float)ENCODER_CPR;
-    (void)Foc_EncoderUpdate(&s_enc, mech, CFG_PWM_DT_S);
-  }
-  else
-  {
-    Foc_EncoderPredict(&s_enc, CFG_PWM_DT_S);
-  }
+  ok = Encoder_ReadRawFast(&raw);
+  Servo_ApplyEncoderSample(ok, raw);
 
   if (mode == SERVO_OPENLOOP)
   {
@@ -342,11 +288,18 @@ ServoMode_t Servo_GetMode(void)
 
 void Servo_SetOpenloop(float d_v, float q_v, float elec_rate_rad_s, float elec_angle_rad)
 {
+  const uint32_t primask = __get_PRIMASK();
+
+  __disable_irq();
   s_ol_d = d_v;
   s_ol_q = q_v;
   s_ol_rate = elec_rate_rad_s;
   s_ol_elec = Foc_WrapAngle0To2Pi(elec_angle_rad);
+  /* Cali/openloop must not slew from the previous closed-loop voltage. */
+  s_d_out = d_v;
+  s_q_out = q_v;
   s_mode = SERVO_OPENLOOP;
+  __set_PRIMASK(primask);
 }
 
 void Servo_SetOpenloopRate(float elec_rate_rad_s)
@@ -362,9 +315,15 @@ float Servo_GetOpenloopElec(void)
 
 void Servo_SetVoltageCmd(float d_v, float q_v)
 {
+  const uint32_t primask = __get_PRIMASK();
+
+  __disable_irq();
   s_volt_d = d_v;
   s_volt_q = q_v;
+  s_d_out = d_v;
+  s_q_out = q_v;
   s_mode = SERVO_VOLTAGE;
+  __set_PRIMASK(primask);
 }
 
 void Servo_SetMotion(float p_set, float v_set, float t_ff)
