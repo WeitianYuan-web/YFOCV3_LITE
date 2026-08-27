@@ -13,9 +13,10 @@
 | Motion `0x100` | 电压模式：Position / Velocity / `VoltageFF = int16/32767`（−1~1）；有效帧后回 `0x300`；同一次 RX 处理只执行最后一帧有效实时命令 |
 | Velocity `0x140` | 电压 PI：`u = Kp e_v + Ki ∫e_v`；积分对 `±V_LIMIT` 钳位抗饱和 |
 | Position `0x1C0` | 位置 PID 外环 + 速度 PI 内环（内环用 VELOCITY Gains）；外环积分对 `±vmax` 钳位，内环电压饱和时冻结外环积分 |
-| Gains `0x180` | 三组都接受。MOTION：Ki=0；VELOCITY：Kd=0；POSITION：外环 Kp/Ki/Kd |
+| Gains `0x180` | 三组都接受。MOTION：Ki=0；VELOCITY：Kd=0；POSITION：外环 Kp/Ki/Kd。`GET_GAINS` 读当前 RAM，编码与 SET 相同 |
 | SET_ZERO / GET_STATUS / SET_CONTROL_MODE | 已接入；上电默认 `MOTION_MODE`；`RUNNING` 下可切换三模式；`GET_STATUS` 母线电压为 PB0 实测 |
 | SET_NODE_ID `0x07` | 本固件扩展。Byte2=新 ID（1–63），成功则旧 ID 上回 ACK（Byte6=新 ID）后软复位；与校准记录同页保存 |
+| SAVE_USER_PARAMS `0x08` | 本固件扩展。只快照速度 Kp/Ki 与位置 Kp/Ki/Kd 到校准同一 NV 记录（读-改-写，一个 CRC）。SET_GAINS / SET_ZERO 只改 RAM |
 | CLEAR_FAULT | 可清除闩锁的 `CALIBRATION_FAULT` |
 | START_ENCODER_CALIBRATION + `0x3C0` | 先 ACK 再校准；约 50 ms 上报，Stage 变化立即多发一帧 |
 | 非实时重发 | 相同 Command+Sequence 重发缓存应答，不重复执行 |
@@ -487,6 +488,38 @@ Sequence = 请求中的 Sequence
 
 ACK 不改变当前 Control Mode。Control Gains 中的 Control Mode 只用于选择要修改的参数组，实际模式切换必须使用 `SET_CONTROL_MODE`。
 
+SET_GAINS 只更新 RAM。速度/位置环要进 Flash 须另发 `SAVE_USER_PARAMS`。Motion Kp/Kd 不写入 NV，上电为 0，除非主机本会话已 SET。
+
+## 4.1 GET_GAINS（本固件扩展）
+
+读**当前 RAM**（不是 Flash 镜像）。上电后若 NV 里有用户增益，Vel/Pos 来自 Flash；Motion 仍为 0，除非主机刚 SET 过。三组都可 GET，便于核对。
+
+请求：
+
+```text
+CAN ID = 0x200 + MotorID
+
+Byte0 = 0x21
+Byte1 = Sequence
+Byte2 = Control Mode（与 SET_GAINS 相同：0=MOTION / 1=VELOCITY / 2=POSITION）
+Byte3~7 = 0
+```
+
+成功：不再额外返回 Command ACK。应答与 SET_GAINS 同布局、同 LSB：
+
+```text
+CAN ID = 0x180 + MotorID
+Direction = Motor → Master
+
+Byte0 = Control Mode
+Byte1 = Sequence
+Byte2~3 = Kp uint16
+Byte4~5 = Ki uint16
+Byte6~7 = Kd uint16
+```
+
+Mode 非法或 Reserved 非 0 时，在 `0x280` 返回 `PARAMETER_OUT_OF_RANGE`。
+
 ---
 
 # 5. Management Command
@@ -514,11 +547,14 @@ Command 定义：
 0x04  CLEAR_FAULT
 0x05  START_ENCODER_CALIBRATION
 0x06  SET_CONTROL_MODE
+0x07  SET_NODE_ID（本固件扩展）
+0x08  SAVE_USER_PARAMS（本固件扩展）
 
 0x10  GET_STATUS
+0x21  GET_GAINS（本固件扩展）
 ```
 
-> **本固件：** `ENABLE`/`DISABLE` → `INVALID_COMMAND`。其余命令见各节标注。扩展命令 `0x07 SET_NODE_ID` 见 5.2。
+> **本固件：** `ENABLE`/`DISABLE` → `INVALID_COMMAND`。其余命令见各节标注。扩展命令 `0x07 SET_NODE_ID` 见 5.2，`0x08 SAVE_USER_PARAMS` 见 5.3，`0x21 GET_GAINS` 见 4.1。
 
 ## 5.1 SET_CONTROL_MODE
 
@@ -610,6 +646,30 @@ Command  = 0x07
 Sequence = 请求中的 Sequence
 Result   = OK / BUSY / PARAMETER_OUT_OF_RANGE / INTERNAL_ERROR
 Byte6    = New Motor ID（成功时）
+```
+
+## 5.3 SAVE_USER_PARAMS（本固件扩展）
+
+把当前 RAM 里的速度环 `Kp/Ki` 和位置环 `Kp/Ki/Kd` 写入与校准共用的 Flash 记录。读-改-写，一个 CRC。不保存：Motion Kp/Kd、控制模式、目标位置/速度/前馈、使能态、机械零点（`SET_ZERO` 只改 RAM）。
+
+```text
+CAN ID = 0x200 + MotorID
+
+Byte0 = 0x08
+Byte1 = Sequence
+Byte2~7 = 0
+```
+
+> **本固件：** `CALIBRATING` → `BUSY`。Reserved 非 0 → `PARAMETER_OUT_OF_RANGE`。写 Flash 失败 → `INTERNAL_ERROR`。无有效校准记录时仍可只写增益；之后校准 `CaliNv_Save` 会保留它们。上电加载校准时若记录带增益标志，则把 Vel/Pos 灌进 RAM；没有该标志则用固件默认值。
+
+应答：
+
+```text
+CAN ID = 0x280 + MotorID
+
+Command  = 0x08
+Sequence = 请求中的 Sequence
+Result   = OK / BUSY / PARAMETER_OUT_OF_RANGE / INTERNAL_ERROR
 ```
 
 ---
@@ -1189,7 +1249,9 @@ Command：
 0x05 START_ENCODER_CALIBRATION
 0x06 SET_CONTROL_MODE
 0x07 SET_NODE_ID（本固件扩展）
+0x08 SAVE_USER_PARAMS（本固件扩展）
 0x20 SET_GAINS
+0x21 GET_GAINS（本固件扩展）
 ```
 
 Result：
@@ -1204,7 +1266,7 @@ Result：
 0x06  INTERNAL_ERROR
 ```
 
-> **本固件：** `ENABLE`/`DISABLE` 及未知 Command → `INVALID_COMMAND`。`BUSY` 预留给 State=`CALIBRATING` 时的第二条启动命令；当前校准阻塞主循环，通常发不出这条。`INTERNAL_ERROR` 未使用。
+> **本固件：** `ENABLE`/`DISABLE` 及未知 Command → `INVALID_COMMAND`。`BUSY` 用于 `CALIBRATING` 时的第二条启动/SAVE。`INTERNAL_ERROR` 用于 `SET_NODE_ID` / `SAVE_USER_PARAMS` 写 Flash 失败。
 
 ---
 
@@ -1215,6 +1277,8 @@ Result：
 | `Motion Command 0x100` | 当前模式为 MOTION 时返回 **`Motion Feedback 0x300`** |
 | `Velocity Mode Command 0x140` | 当前模式为 VELOCITY 时返回 **`Motion Feedback 0x300`** |
 | `Control Gains 0x180` | **`Command ACK 0x280`** |
+| `GET_GAINS` | 成功：**`0x180` Gains 布局**（无额外 ACK）；失败：`Command ACK 0x280` |
+| `SAVE_USER_PARAMS` | **`Command ACK 0x280`** |
 | `Position Mode Command 0x1C0` | 当前模式为 POSITION 时返回 **`Motion Feedback 0x300`** |
 | `ENABLE` | **`Command ACK 0x280`** |
 | `DISABLE` | **`Command ACK 0x280`** |

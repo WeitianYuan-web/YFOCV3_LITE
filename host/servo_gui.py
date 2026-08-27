@@ -379,13 +379,23 @@ class HostWindow(QMainWindow):
         )
         btn = QPushButton("发送 SET_GAINS")
         btn.clicked.connect(self.send_gains)
+        btn_get = QPushButton("GET_GAINS")
+        btn_get.clicked.connect(self.send_get_gains)
+        btn_save = QPushButton("SAVE_USER_PARAMS")
+        btn_save.clicked.connect(self.send_save_user_params)
         wrap = QWidget()
         row = QHBoxLayout(wrap)
         row.setContentsMargins(0, 0, 0, 0)
         row.addWidget(btn)
+        row.addWidget(btn_get)
+        row.addWidget(btn_save)
         row.addStretch(1)
         tab.layout().addRow(wrap)
-        hint = QLabel("MOTION：Ki=0。VELOCITY：Kd=0。POSITION 只改外环，内环用 VELOCITY PI。")
+        hint = QLabel(
+            "SET 只改 RAM。SAVE 只把速度 Kp/Ki 和位置 Kp/Ki/Kd 写入 Flash（与校准同一记录）。"
+            "GET 读当前 RAM。Motion 增益不进 SAVE，上电为 0。"
+            "MOTION：Ki=0。VELOCITY：Kd=0。POSITION 只改外环，内环用 VELOCITY PI。"
+        )
         hint.setObjectName("scopeHint")
         tab.layout().addRow(hint)
         return tab
@@ -665,6 +675,24 @@ class HostWindow(QMainWindow):
         w.send(w.ids["gains"], proto.pack_gains(mode, seq, kp, ki, kd))
         self._log(f"TX SET_GAINS mode={self.cmb_g_mode.currentText()} seq={seq} kp={kp} ki={ki} kd={kd}")
 
+    def send_get_gains(self) -> None:
+        w = self._need_worker()
+        if w is None:
+            return
+        mode_map = {"MOTION": proto.MODE_MOTION, "VELOCITY": proto.MODE_VELOCITY, "POSITION": proto.MODE_POSITION}
+        seq = self._next_seq()
+        mode = mode_map[self.cmb_g_mode.currentText()]
+        w.send(w.ids["mgmt"], proto.pack_mgmt(proto.CMD_GET_GAINS, seq, mode))
+        self._log(f"TX GET_GAINS mode={self.cmb_g_mode.currentText()} seq={seq}")
+
+    def send_save_user_params(self) -> None:
+        w = self._need_worker()
+        if w is None:
+            return
+        seq = self._next_seq()
+        w.send(w.ids["mgmt"], proto.pack_mgmt(proto.CMD_SAVE_USER_PARAMS, seq))
+        self._log(f"TX SAVE_USER_PARAMS seq={seq}")
+
     def send_mgmt(self, cmd: int) -> None:
         w = self._need_worker()
         if w is None:
@@ -747,6 +775,15 @@ class HostWindow(QMainWindow):
                         f"ACK {payload['cmd_name']} seq={payload['seq']} "
                         f"{payload['result_name']} state={payload['state_name']} "
                         f"fault={payload['fault_name']}{extra}"
+                    )
+                elif kind == "gains":
+                    self.cmb_g_mode.setCurrentText(str(payload["mode_name"]))
+                    self.ed_g_kp.setText(f"{payload['kp']:.6g}")
+                    self.ed_g_ki.setText(f"{payload['ki']:.6g}")
+                    self.ed_g_kd.setText(f"{payload['kd']:.6g}")
+                    self._log(
+                        f"GAINS {payload['mode_name']} seq={payload['seq']} "
+                        f"kp={payload['kp']:.6g} ki={payload['ki']:.6g} kd={payload['kd']:.6g}"
                     )
                 elif kind == "status":
                     self.val_state.setText(str(payload["state_name"]))

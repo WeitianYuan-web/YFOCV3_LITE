@@ -365,6 +365,18 @@ void Servo_SetGains(float kp, float kd)
   s_kd = Foc_Clamp(kd, CFG_KD_MIN, CFG_KD_MAX);
 }
 
+void Servo_GetGains(float *kp, float *kd)
+{
+  if (kp != 0)
+  {
+    *kp = s_kp;
+  }
+  if (kd != 0)
+  {
+    *kd = s_kd;
+  }
+}
+
 void Servo_SetVelocityGains(float kp, float ki)
 {
   const uint32_t primask = __get_PRIMASK();
@@ -377,6 +389,18 @@ void Servo_SetVelocityGains(float kp, float ki)
     s_vel_i = 0.0f;
   }
   __set_PRIMASK(primask);
+}
+
+void Servo_GetVelocityGains(float *kp, float *ki)
+{
+  if (kp != 0)
+  {
+    *kp = s_vel_kp;
+  }
+  if (ki != 0)
+  {
+    *ki = s_vel_ki;
+  }
 }
 
 void Servo_SetPositionGains(float kp, float ki, float kd)
@@ -392,6 +416,22 @@ void Servo_SetPositionGains(float kp, float ki, float kd)
     s_pos_i = 0.0f;
   }
   __set_PRIMASK(primask);
+}
+
+void Servo_GetPositionGains(float *kp, float *ki, float *kd)
+{
+  if (kp != 0)
+  {
+    *kp = s_pos_kp;
+  }
+  if (ki != 0)
+  {
+    *ki = s_pos_ki;
+  }
+  if (kd != 0)
+  {
+    *kd = s_pos_kd;
+  }
 }
 
 void Servo_SetCtrlMode(uint8_t mode)

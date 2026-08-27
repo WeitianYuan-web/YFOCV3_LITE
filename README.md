@@ -112,8 +112,9 @@ Motor CAN Protocol V1.0，Classic CAN 1 Mbps，**小端**，Motor ID = 1~63。�
 | `0x100+ID` | 主机→电机 | Motion Command |
 | `0x140+ID` | 主机→电机 | Velocity Mode Command |
 | `0x180+ID` | 主机→电机 | Control Gains（MOTION / VELOCITY / POSITION 三组） |
+| `0x180+ID` | 电机→主机 | GET_GAINS 成功应答（与 SET 同布局） |
 | `0x1C0+ID` | 主机→电机 | Position Mode Command |
-| `0x200+ID` | 主机→电机 | Management：SET_ZERO / CLEAR_FAULT / START_CALI / GET_STATUS / SET_CONTROL_MODE / SET_NODE_ID |
+| `0x200+ID` | 主机→电机 | Management：SET_ZERO / CLEAR_FAULT / START_CALI / GET_STATUS / SET_CONTROL_MODE / SET_NODE_ID / SAVE_USER_PARAMS / GET_GAINS |
 | `0x280+ID` | 电机→主机 | Command ACK |
 | `0x300+ID` | 电机→主机 | Motion Feedback |
 | `0x380+ID` | 电机→主机 | Status Response（母线电压实测；温度填 0） |
@@ -127,7 +128,7 @@ Motion `0x100+ID`：
 | 4-5 | 目标速度 | `int16`，`0.1 rad/s/LSB` |
 | 6-7 | Voltage FF | `int16`，`raw/32767` → −1~1 |
 
-Gains `0x180+ID`：Byte0=Control Mode，Byte1=Sequence。MOTION：Kp `0.01 pu/rad`，Ki=0，Kd `0.001 pu·s/rad`。VELOCITY：Kp `0.001 pu/(rad/s)`，Ki `0.001 pu/rad`，Kd=0。POSITION：外环 Kp `0.01 s⁻¹`，Ki `0.001 s⁻²`，Kd `0.001`。位置内环使用 VELOCITY 那组 PI。
+Gains `0x180+ID`：Byte0=Control Mode，Byte1=Sequence。MOTION：Kp `0.01 pu/rad`，Ki=0，Kd `0.001 pu·s/rad`。VELOCITY：Kp `0.001 pu/(rad/s)`，Ki `0.001 pu/rad`，Kd=0。POSITION：外环 Kp `0.01 s⁻¹`，Ki `0.001 s⁻²`，Kd `0.001`。位置内环使用 VELOCITY 那组 PI。SET 只改 RAM。`GET_GAINS`（`0x200`，Byte0=`0x21`，Byte2=mode）成功时电机在 `0x180` 回同样布局，读的是当前 RAM。`SAVE_USER_PARAMS`（`0x200`，Byte0=`0x08`）把速度 Kp/Ki 和位置 Kp/Ki/Kd 写入校准同一 Flash 记录；不存 Motion 增益、模式、目标或零点。上电若 Flash 有用户增益则加载 Vel/Pos，Motion 保持 0。
 
 `SET_CONTROL_MODE` 可在 RUNNING 下切换三模式；切换后清积分，电压为 0 直到收到新模式的有效实时命令。上电默认 MOTION。
 

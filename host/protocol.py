@@ -28,8 +28,10 @@ CMD_CLEAR_FAULT = 0x04
 CMD_START_CALI = 0x05
 CMD_SET_MODE = 0x06
 CMD_SET_NODE_ID = 0x07
+CMD_SAVE_USER_PARAMS = 0x08
 CMD_GET_STATUS = 0x10
 CMD_SET_GAINS = 0x20
+CMD_GET_GAINS = 0x21
 
 CAN_MOTION = 0x100
 CAN_VEL = 0x140
@@ -73,8 +75,10 @@ CMD_NAME = {
     CMD_START_CALI: "START_CALI",
     CMD_SET_MODE: "SET_CONTROL_MODE",
     CMD_SET_NODE_ID: "SET_NODE_ID",
+    CMD_SAVE_USER_PARAMS: "SAVE_USER_PARAMS",
     CMD_GET_STATUS: "GET_STATUS",
     CMD_SET_GAINS: "SET_GAINS",
+    CMD_GET_GAINS: "GET_GAINS",
 }
 
 CALI_ERROR_NAME = {
@@ -168,6 +172,30 @@ def pack_gains(mode: int, seq: int, kp: float, ki: float, kd: float) -> bytes:
         ki_raw = clamp_u16(int(round(ki / KI_LSB_POS)))
         kd_raw = clamp_u16(int(round(kd / KD_LSB_POS)))
     return struct.pack("<BBHHH", mode & 0xFF, seq & 0xFF, kp_raw, ki_raw, kd_raw)
+
+
+def unpack_gains(data: bytes) -> dict[str, float | int | str]:
+    mode, seq, kp_raw, ki_raw, kd_raw = struct.unpack("<BBHHH", data)
+    if mode == MODE_MOTION:
+        kp = kp_raw * KP_LSB_MOTION
+        ki = 0.0
+        kd = kd_raw * KD_LSB_MOTION
+    elif mode == MODE_VELOCITY:
+        kp = kp_raw * KP_LSB_VEL
+        ki = ki_raw * KI_LSB_VEL
+        kd = 0.0
+    else:
+        kp = kp_raw * KP_LSB_POS
+        ki = ki_raw * KI_LSB_POS
+        kd = kd_raw * KD_LSB_POS
+    return {
+        "mode": mode,
+        "mode_name": MODE_NAME.get(mode, f"0x{mode:02X}"),
+        "seq": seq,
+        "kp": kp,
+        "ki": ki,
+        "kd": kd,
+    }
 
 
 def pack_mgmt(cmd: int, seq: int, arg: int = 0) -> bytes:

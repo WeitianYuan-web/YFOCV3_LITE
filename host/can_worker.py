@@ -72,6 +72,8 @@ class CanWorker(threading.Thread):
             self.rx_q.put(("fb", proto.unpack_feedback(data)))
         elif aid == self.ids["ack"]:
             self.rx_q.put(("ack", proto.unpack_ack(data)))
+        elif aid == self.ids["gains"]:
+            self.rx_q.put(("gains", proto.unpack_gains(data)))
         elif aid == self.ids["status"]:
             self.rx_q.put(("status", proto.unpack_status(data)))
         elif aid == self.ids["cali"]:

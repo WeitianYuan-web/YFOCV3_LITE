@@ -2,6 +2,7 @@
 
 #include "adc.h"
 #include "cali.h"
+#include "cali_nv.h"
 #include "can.h"
 #include "config.h"
 #include "foc_math.h"
@@ -22,8 +23,10 @@
 #define COMM_CMD_START_CALI         (0x05U)
 #define COMM_CMD_SET_MODE           (0x06U)
 #define COMM_CMD_SET_NODE_ID        (0x07U)
+#define COMM_CMD_SAVE_USER_PARAMS   (0x08U)
 #define COMM_CMD_GET_STATUS         (0x10U)
 #define COMM_CMD_SET_GAINS          (0x20U)
+#define COMM_CMD_GET_GAINS          (0x21U)
 
 #define COMM_RES_OK                 (0x00U)
 #define COMM_RES_INVALID_COMMAND    (0x01U)
@@ -105,6 +108,20 @@ static int16_t Comm_FloatToI16(float x, float lsb)
     return (int16_t)-32768;
   }
   return (int16_t)v;
+}
+
+static uint16_t Comm_FloatToU16(float x, float lsb)
+{
+  const int32_t v = Comm_FloatToI32(x, lsb);
+  if (v < 0)
+  {
+    return 0U;
+  }
+  if (v > 65535)
+  {
+    return 65535U;
+  }
+  return (uint16_t)v;
 }
 
 static uint8_t Comm_ReservedZero(const uint8_t *p, uint8_t offset)
@@ -313,6 +330,85 @@ static void Comm_HandleGains(const uint8_t *d)
   Comm_SendAck(COMM_CMD_SET_GAINS, seq, COMM_RES_OK);
 }
 
+static void Comm_SendGainsReply(uint8_t seq, uint8_t mode,
+                                float kp, float ki, float kd,
+                                float kp_lsb, float ki_lsb, float kd_lsb)
+{
+  uint8_t data[8];
+
+  data[0] = mode;
+  data[1] = seq;
+  Comm_WriteU16Le(&data[2], Comm_FloatToU16(kp, kp_lsb));
+  Comm_WriteU16Le(&data[4], Comm_FloatToU16(ki, ki_lsb));
+  Comm_WriteU16Le(&data[6], Comm_FloatToU16(kd, kd_lsb));
+  Comm_CacheSend(CFG_CAN_GAINS_BASE + Comm_Nid(), COMM_CMD_GET_GAINS, seq, data);
+}
+
+static void Comm_HandleGetGains(const uint8_t *d)
+{
+  const uint8_t seq = d[1];
+  const uint8_t mode = d[2];
+  float kp = 0.0f;
+  float ki = 0.0f;
+  float kd = 0.0f;
+
+  if (Comm_ReplayIfDup(COMM_CMD_GET_GAINS, seq) != 0U)
+  {
+    return;
+  }
+  if ((mode > COMM_MODE_POSITION) || (Comm_ReservedZero(d, 3U) == 0U))
+  {
+    Comm_SendAck(COMM_CMD_GET_GAINS, seq, COMM_RES_OUT_OF_RANGE);
+    return;
+  }
+
+  if (mode == COMM_MODE_MOTION)
+  {
+    Servo_GetGains(&kp, &kd);
+    Comm_SendGainsReply(seq, mode, kp, 0.0f, kd, CFG_KP_LSB, CFG_KP_LSB, CFG_KD_LSB);
+  }
+  else if (mode == COMM_MODE_VELOCITY)
+  {
+    Servo_GetVelocityGains(&kp, &ki);
+    Comm_SendGainsReply(seq, mode, kp, ki, 0.0f, CFG_KP_VEL_LSB, CFG_KI_VEL_LSB, CFG_KD_LSB);
+  }
+  else
+  {
+    Servo_GetPositionGains(&kp, &ki, &kd);
+    Comm_SendGainsReply(seq, mode, kp, ki, kd, CFG_KP_POS_LSB, CFG_KI_POS_LSB, CFG_KD_POS_LSB);
+  }
+}
+
+static void Comm_HandleSaveUserParams(uint8_t seq)
+{
+  float vel_kp = 0.0f;
+  float vel_ki = 0.0f;
+  float pos_kp = 0.0f;
+  float pos_ki = 0.0f;
+  float pos_kd = 0.0f;
+  uint8_t ok;
+
+  if (s_state == COMM_STATE_CALIBRATING)
+  {
+    Comm_SendAck(COMM_CMD_SAVE_USER_PARAMS, seq, COMM_RES_BUSY);
+    return;
+  }
+
+  Servo_GetVelocityGains(&vel_kp, &vel_ki);
+  Servo_GetPositionGains(&pos_kp, &pos_ki, &pos_kd);
+  Servo_HoldPosition();
+  Can_StopForFlash();
+  ok = CaliNv_SaveUserGains(Node_GetId(),
+                            Comm_FloatToU16(vel_kp, CFG_KP_VEL_LSB),
+                            Comm_FloatToU16(vel_ki, CFG_KI_VEL_LSB),
+                            Comm_FloatToU16(pos_kp, CFG_KP_POS_LSB),
+                            Comm_FloatToU16(pos_ki, CFG_KI_POS_LSB),
+                            Comm_FloatToU16(pos_kd, CFG_KD_POS_LSB));
+  Can_Restart();
+  Comm_SendAck(COMM_CMD_SAVE_USER_PARAMS, seq,
+               (ok != 0U) ? COMM_RES_OK : COMM_RES_INTERNAL_ERROR);
+}
+
 static void Comm_HandleMgmt(const uint8_t *d)
 {
   const uint8_t cmd = d[0];
@@ -402,6 +498,19 @@ static void Comm_HandleMgmt(const uint8_t *d)
         break;
       }
       Comm_SendAckArg(cmd, seq, COMM_RES_OK, d[2]);
+      break;
+
+    case COMM_CMD_SAVE_USER_PARAMS:
+      if (Comm_ReservedZero(d, 2U) == 0U)
+      {
+        Comm_SendAck(cmd, seq, COMM_RES_OUT_OF_RANGE);
+        break;
+      }
+      Comm_HandleSaveUserParams(seq);
+      break;
+
+    case COMM_CMD_GET_GAINS:
+      Comm_HandleGetGains(d);
       break;
 
     case COMM_CMD_GET_STATUS:

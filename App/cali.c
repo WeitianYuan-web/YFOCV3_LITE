@@ -447,11 +447,21 @@ static uint8_t Cali_ApplySaved(const CaliNvData_t *nv)
   raw_mech = Foc_EncoderGetLastRaw(enc);
   Foc_EncoderReset(enc, raw_mech);
   Pwm_EnableOutputs();
+  if (nv->user_gains_valid != 0U)
+  {
+    Servo_SetVelocityGains((float)nv->vel_kp_raw * CFG_KP_VEL_LSB,
+                           (float)nv->vel_ki_raw * CFG_KI_VEL_LSB);
+    Servo_SetPositionGains((float)nv->pos_kp_raw * CFG_KP_POS_LSB,
+                           (float)nv->pos_ki_raw * CFG_KI_POS_LSB,
+                           (float)nv->pos_kd_raw * CFG_KD_POS_LSB);
+  }
   Servo_HoldPosition();
   Servo_SetMode(SERVO_RUN);
   CtrlTimer_Start();
 
-  Dbg_Printf("cali: load pp=%d\r\n", (int)nv->pole_pairs);
+  Dbg_Printf("cali: load pp=%d gains=%u\r\n",
+             (int)nv->pole_pairs,
+             (unsigned)nv->user_gains_valid);
   return 1U;
 }
 
