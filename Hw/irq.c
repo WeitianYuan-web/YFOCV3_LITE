@@ -1,6 +1,7 @@
 #include "board.h"
 #include "can.h"
 #include "servo.h"
+#include "gd32f30x.h"
 
 void NMI_Handler(void)
 {
@@ -54,28 +55,30 @@ void SysTick_Handler(void)
   HAL_IncTick();
 }
 
-/* ADC1 injected EOC will belong to a future 20 kHz current trigger.
- * Vbus stays on ADC1 regular and must not steal that IRQ. */
-
-void TIM1_UP_TIM16_IRQHandler(void)
+void TIMER0_UP_IRQHandler(void)
 {
-  if ((TIM1->SR & TIM_SR_UIF) != 0U)
+  if (SET == timer_interrupt_flag_get(TIMER0, TIMER_INT_FLAG_UP))
   {
-    TIM1->SR = ~TIM_SR_UIF;
+    timer_interrupt_flag_clear(TIMER0, TIMER_INT_FLAG_UP);
     Servo_OnPwmIsr();
   }
 }
 
-void TIM6_DAC_IRQHandler(void)
+void TIMER5_IRQHandler(void)
 {
-  if ((TIM6->SR & TIM_SR_UIF) != 0U)
+  if (SET == timer_interrupt_flag_get(TIMER5, TIMER_INT_FLAG_UP))
   {
-    TIM6->SR = ~TIM_SR_UIF;
+    timer_interrupt_flag_clear(TIMER5, TIMER_INT_FLAG_UP);
     Servo_OnCtrlIsr();
   }
 }
 
-void FDCAN1_IT0_IRQHandler(void)
+void USBD_LP_CAN0_RX0_IRQHandler(void)
 {
-  HAL_FDCAN_IRQHandler(&hfdcan1);
+  Can_ProcessRxIrq();
+}
+
+void CAN0_EWMC_IRQHandler(void)
+{
+  Can_OnBusOffIrq();
 }

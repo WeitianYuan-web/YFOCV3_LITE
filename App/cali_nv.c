@@ -4,14 +4,12 @@
 #include <string.h>
 
 #include "config.h"
-#include "stm32g4xx.h"
-#include "stm32g4xx_hal.h"
+#include "gd32f30x.h"
 
 #define CALI_NV_MAGIC     (0x59464F43UL) /* "YFOC" */
 #define CALI_NV_VERSION_V1 (1U)
 #define CALI_NV_VERSION   (2U)
-#define CALI_NV_PAGE      (63U)
-#define CALI_NV_ADDR      (0x0801F800UL)
+#define CALI_NV_ADDR      (0x0803F800UL) /* last 2 KB page of 256 KB Flash */
 #define CALI_NV_FLAG_GAINS (1U)
 
 typedef struct
@@ -211,57 +209,40 @@ static uint32_t CaliNv_IrqQuiesce(void)
 
 static void CaliNv_IrqResume(uint32_t primask)
 {
-  TIM1->SR = (uint32_t)~TIM_SR_UIF;
-  TIM6->SR = (uint32_t)~TIM_SR_UIF;
-  NVIC_ClearPendingIRQ(TIM1_UP_TIM16_IRQn);
-  NVIC_ClearPendingIRQ(TIM6_DAC_IRQn);
-  NVIC_ClearPendingIRQ(FDCAN1_IT0_IRQn);
-  NVIC_ClearPendingIRQ(SysTick_IRQn);
+  timer_interrupt_flag_clear(TIMER0, TIMER_INT_FLAG_UP);
+  timer_interrupt_flag_clear(TIMER5, TIMER_INT_FLAG_UP);
+  NVIC_ClearPendingIRQ(TIMER0_UP_IRQn);
+  NVIC_ClearPendingIRQ(TIMER5_IRQn);
+  NVIC_ClearPendingIRQ(USBD_LP_CAN0_RX0_IRQn);
+  NVIC_ClearPendingIRQ(CAN0_EWMC_IRQn);
+  SCB->ICSR = SCB_ICSR_PENDSTCLR_Msk;
   __DSB();
   __ISB();
   __set_PRIMASK(primask);
 }
 
-static uint8_t CaliNv_EraseUnlocked(void)
-{
-  FLASH_EraseInitTypeDef erase = {0};
-  uint32_t page_error = 0xFFFFFFFFUL;
-
-  erase.TypeErase = FLASH_TYPEERASE_PAGES;
-  erase.Banks = FLASH_BANK_1;
-  erase.Page = CALI_NV_PAGE;
-  erase.NbPages = 1U;
-  return (HAL_FLASHEx_Erase(&erase, &page_error) == HAL_OK) ? 1U : 0U;
-}
-
 static uint8_t CaliNv_Program(const CaliNvRecord_t *rec)
 {
-  uint64_t words[4];
+  uint32_t words[8];
   uint32_t i;
   uint8_t ok = 0U;
   const uint32_t primask = CaliNv_IrqQuiesce();
 
   memcpy(words, rec, sizeof(*rec));
-  if (HAL_FLASH_Unlock() != HAL_OK)
-  {
-    CaliNv_IrqResume(primask);
-    return 0U;
-  }
-  if (CaliNv_EraseUnlocked() != 0U)
+  fmc_unlock();
+  if (FMC_READY == fmc_page_erase(CALI_NV_ADDR))
   {
     ok = 1U;
-    for (i = 0U; i < 4U; i++)
+    for (i = 0U; i < 8U; i++)
     {
-      if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD,
-                            CALI_NV_ADDR + (i * 8UL),
-                            words[i]) != HAL_OK)
+      if (FMC_READY != fmc_word_program(CALI_NV_ADDR + (i * 4UL), words[i]))
       {
         ok = 0U;
         break;
       }
     }
   }
-  (void)HAL_FLASH_Lock();
+  fmc_lock();
   __DSB();
   CaliNv_IrqResume(primask);
   return ok;

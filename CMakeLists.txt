@@ -8,9 +8,6 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release")
 endif()
 
-# Prefer CMAKE_TOOLCHAIN_FILE (CMake Presets / CLion) over include().
-# include() before project() is too late to override a host compiler CLion may inject,
-# and double-loads flags when the preset also sets toolchainFile.
 if(NOT CMAKE_TOOLCHAIN_FILE)
     set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/gcc-arm-none-eabi.cmake"
         CACHE FILEPATH "ARM GCC toolchain" FORCE)
@@ -21,20 +18,19 @@ set(CMAKE_PROJECT_NAME YFOCV3)
 
 project(${CMAKE_PROJECT_NAME} C ASM)
 
-# Toolchain file can return early on reconfigure; keep Release at -O2 here.
 set(CMAKE_C_FLAGS_RELEASE        "-O2 -g0 -DNDEBUG" CACHE STRING "Release C flags" FORCE)
 set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O2 -g3 -DNDEBUG" CACHE STRING "RelWithDebInfo C flags" FORCE)
 
 add_executable(${CMAKE_PROJECT_NAME})
 
-set(HAL_DIR   "${CMAKE_CURRENT_SOURCE_DIR}/Drivers/STM32G4xx_HAL_Driver")
-set(CMSIS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Drivers/CMSIS")
+set(GD32_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/Drivers/GD32F30x")
+set(GD32_CMSIS "${GD32_ROOT}/CMSIS")
+set(GD32_SPL   "${GD32_ROOT}/GD32F30x_standard_peripheral")
 
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-    Hw/startup_stm32g431xx.s
-    Hw/system_stm32g4xx.c
-    Hw/sysmem.c
-    Hw/syscalls.c
+    Hw/startup_gd32f30x_hd.S
+    ${GD32_CMSIS}/GD/GD32F30x/Source/system_gd32f30x.c
+    ${GD32_CMSIS}/GD/GD32F30x/Source/syscalls.c
     Hw/board.c
     Hw/irq.c
     Hw/pwm.c
@@ -45,26 +41,16 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Hw/RTT/SEGGER_RTT.c
     Hw/RTT/SEGGER_RTT_printf.c
 
-    ${HAL_DIR}/Src/stm32g4xx_hal.c
-    ${HAL_DIR}/Src/stm32g4xx_hal_adc.c
-    ${HAL_DIR}/Src/stm32g4xx_hal_adc_ex.c
-    ${HAL_DIR}/Src/stm32g4xx_hal_cortex.c
-    ${HAL_DIR}/Src/stm32g4xx_hal_dma.c
-    ${HAL_DIR}/Src/stm32g4xx_hal_dma_ex.c
-    ${HAL_DIR}/Src/stm32g4xx_hal_exti.c
-    ${HAL_DIR}/Src/stm32g4xx_hal_fdcan.c
-    ${HAL_DIR}/Src/stm32g4xx_hal_flash.c
-    ${HAL_DIR}/Src/stm32g4xx_hal_flash_ex.c
-    ${HAL_DIR}/Src/stm32g4xx_hal_flash_ramfunc.c
-    ${HAL_DIR}/Src/stm32g4xx_hal_gpio.c
-    ${HAL_DIR}/Src/stm32g4xx_hal_pwr.c
-    ${HAL_DIR}/Src/stm32g4xx_hal_pwr_ex.c
-    ${HAL_DIR}/Src/stm32g4xx_hal_rcc.c
-    ${HAL_DIR}/Src/stm32g4xx_hal_rcc_ex.c
-    ${HAL_DIR}/Src/stm32g4xx_hal_spi.c
-    ${HAL_DIR}/Src/stm32g4xx_hal_spi_ex.c
-    ${HAL_DIR}/Src/stm32g4xx_hal_tim.c
-    ${HAL_DIR}/Src/stm32g4xx_hal_tim_ex.c
+    ${GD32_SPL}/Source/gd32f30x_adc.c
+    ${GD32_SPL}/Source/gd32f30x_can.c
+    ${GD32_SPL}/Source/gd32f30x_dbg.c
+    ${GD32_SPL}/Source/gd32f30x_fmc.c
+    ${GD32_SPL}/Source/gd32f30x_gpio.c
+    ${GD32_SPL}/Source/gd32f30x_misc.c
+    ${GD32_SPL}/Source/gd32f30x_pmu.c
+    ${GD32_SPL}/Source/gd32f30x_rcu.c
+    ${GD32_SPL}/Source/gd32f30x_spi.c
+    ${GD32_SPL}/Source/gd32f30x_timer.c
 
     Foc/foc_math.c
     Foc/foc_svpwm.c
@@ -83,19 +69,18 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Foc
     Hw
     Hw/RTT
-    ${HAL_DIR}/Inc
-    ${HAL_DIR}/Inc/Legacy
-    ${CMSIS_DIR}/Device/ST/STM32G4xx/Include
-    ${CMSIS_DIR}/Include
+    ${GD32_CMSIS}
+    ${GD32_CMSIS}/GD/GD32F30x/Include
+    ${GD32_SPL}/Include
 )
 
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
-    USE_HAL_DRIVER
-    STM32G431xx
+    GD32F30X_HD
+    USE_STDPERIPH_DRIVER
+    HXTAL_VALUE=32000000
     $<$<CONFIG:Debug>:DEBUG>
 )
 
-# Hot path: last -O wins over the global -O2. Skip -ffast-math (breaks wrap/NaN).
 set_source_files_properties(
     Foc/foc_math.c
     Foc/foc_svpwm.c
@@ -107,8 +92,7 @@ set_source_files_properties(
         COMPILE_OPTIONS "$<$<CONFIG:Release,RelWithDebInfo>:-O3;-fno-math-errno;-fno-trapping-math>"
 )
 
-# Forward slashes: GNU ld on Windows rejects mixed/backslash -T paths.
-file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/Hw/stm32g431cbux_flash.ld" YFOC_LINKER_SCRIPT)
+file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/Hw/gd32f30x_flash.ld" YFOC_LINKER_SCRIPT)
 target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
     -T "${YFOC_LINKER_SCRIPT}"
     "LINKER:-Map=${CMAKE_PROJECT_NAME}.map"

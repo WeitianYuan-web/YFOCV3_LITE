@@ -3,133 +3,53 @@
 #include "board.h"
 #include "config.h"
 
-ADC_HandleTypeDef hadc1;
-
 static volatile uint16_t s_vbus_raw;
 static volatile float s_vbus_v;
 static uint32_t s_last_poll_ms;
-
-static void Adc_ApplyRegularChannel(void)
-{
-  ADC_ChannelConfTypeDef cfg = {0};
-
-  cfg.Channel = ADC_CHANNEL_15;
-  cfg.Rank = ADC_REGULAR_RANK_1;
-  cfg.SamplingTime = ADC_SAMPLETIME_247CYCLES_5;
-  cfg.SingleDiff = ADC_SINGLE_ENDED;
-  cfg.OffsetNumber = ADC_OFFSET_NONE;
-  cfg.Offset = 0;
-  if (HAL_ADC_ConfigChannel(&hadc1, &cfg) != HAL_OK)
-  {
-    Error_Handler();
-  }
-}
 
 static uint8_t Adc_PollRegularOnce(uint16_t *raw_out)
 {
   uint32_t guard = 20000U;
 
-  if ((ADC1->CR & ADC_CR_ADEN) == 0U)
-  {
-    return 0U;
-  }
-  /* Do not test JADSTART. A later TIM1-triggered current sequence keeps
-   * JADSTART set while armed; regular SW start can still run and is
-   * preempted for a few microseconds. Stopping or skipping here would
-   * freeze Vbus the moment current sampling is added. */
-  if ((ADC1->CR & ADC_CR_ADSTART) != 0U)
-  {
-    return 0U;
-  }
-
-  ADC1->ISR = ADC_ISR_EOC | ADC_ISR_EOS | ADC_ISR_OVR;
-  ADC1->CR |= ADC_CR_ADSTART;
-  while (((ADC1->ISR & ADC_ISR_EOC) == 0U) && (--guard != 0U))
+  adc_flag_clear(ADC0, ADC_FLAG_EOC);
+  adc_software_trigger_enable(ADC0, ADC_ROUTINE_CHANNEL);
+  while ((RESET == adc_flag_get(ADC0, ADC_FLAG_EOC)) && (--guard != 0U))
   {
   }
   if (guard == 0U)
   {
-    ADC1->CR |= ADC_CR_ADSTP;
     return 0U;
   }
 
-  *raw_out = (uint16_t)ADC1->DR;
+  *raw_out = adc_routine_data_read(ADC0);
   return 1U;
-}
-
-void HAL_ADC_MspInit(ADC_HandleTypeDef *adc)
-{
-  GPIO_InitTypeDef gpio = {0};
-  RCC_PeriphCLKInitTypeDef periph = {0};
-
-  if (adc->Instance != ADC1)
-  {
-    return;
-  }
-
-  periph.PeriphClockSelection = RCC_PERIPHCLK_ADC12;
-  periph.Adc12ClockSelection = RCC_ADC12CLKSOURCE_SYSCLK;
-  if (HAL_RCCEx_PeriphCLKConfig(&periph) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  __HAL_RCC_ADC12_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
-
-  gpio.Pin = GPIO_PIN_0;
-  gpio.Mode = GPIO_MODE_ANALOG;
-  gpio.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOB, &gpio);
 }
 
 void Adc_Init(void)
 {
-  ADC_MultiModeTypeDef multimode = {0};
+  rcu_periph_clock_enable(RCU_GPIOB);
+  rcu_periph_clock_enable(RCU_ADC0);
+  rcu_adc_clock_config(RCU_CKADC_CKAPB2_DIV8);
 
-  hadc1.Instance = ADC1;
-  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
-  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.GainCompensation = 0;
-  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
-  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
-  hadc1.Init.LowPowerAutoWait = DISABLE;
-  hadc1.Init.ContinuousConvMode = DISABLE;
-  hadc1.Init.NbrOfConversion = 1;
-  hadc1.Init.DiscontinuousConvMode = DISABLE;
-  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
-  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-  hadc1.Init.SamplingMode = ADC_SAMPLING_MODE_NORMAL;
-  hadc1.Init.DMAContinuousRequests = DISABLE;
-  hadc1.Init.Overrun = ADC_OVR_DATA_OVERWRITTEN;
-  hadc1.Init.OversamplingMode = DISABLE;
-  if (HAL_ADC_Init(&hadc1) != HAL_OK)
-  {
-    Error_Handler();
-  }
+  gpio_init(GPIOB, GPIO_MODE_AIN, GPIO_OSPEED_50MHZ, GPIO_PIN_0);
 
-  multimode.Mode = ADC_MODE_INDEPENDENT;
-  if (HAL_ADCEx_MultiModeConfigChannel(&hadc1, &multimode) != HAL_OK)
-  {
-    Error_Handler();
-  }
+  adc_deinit(ADC0);
+  adc_mode_config(ADC_MODE_FREE);
+  adc_data_alignment_config(ADC0, ADC_DATAALIGN_RIGHT);
+  adc_channel_length_config(ADC0, ADC_ROUTINE_CHANNEL, 1U);
+  adc_routine_channel_config(ADC0, 0U, ADC_CHANNEL_8, ADC_SAMPLETIME_55POINT5);
+  adc_external_trigger_source_config(ADC0, ADC_ROUTINE_CHANNEL, ADC0_1_2_EXTTRIG_ROUTINE_NONE);
+  adc_external_trigger_config(ADC0, ADC_ROUTINE_CHANNEL, ENABLE);
 
-  Adc_ApplyRegularChannel();
-  if (HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED) != HAL_OK)
+  adc_enable(ADC0);
   {
-    Error_Handler();
+    volatile uint32_t delay = 10000U;
+    while (delay != 0U)
+    {
+      delay--;
+    }
   }
-  if (HAL_ADC_Start(&hadc1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* Drain the first software conversion so ADSTART is clear; keep ADEN. */
-  {
-    uint16_t dummy = 0U;
-    (void)HAL_ADC_PollForConversion(&hadc1, 2U);
-    dummy = (uint16_t)HAL_ADC_GetValue(&hadc1);
-    (void)dummy;
-  }
+  adc_calibration_enable(ADC0);
 
   s_vbus_raw = 0U;
   s_vbus_v = 0.0f;

@@ -8,8 +8,6 @@
 #include "foc_math.h"
 #include "pwm.h"
 #include "servo.h"
-#include "stm32g4xx.h"
-#include "stm32g4xx_hal.h"
 
 #define NODE_DEBOUNCE_MS       (30U)
 #define NODE_LONG_MS           (2000U)

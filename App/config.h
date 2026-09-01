@@ -14,14 +14,17 @@ extern "C" {
 #define CFG_ENCODER_KTH7812         (1U)
 #define CFG_ENCODER_TYPE            CFG_ENCODER_MT6701
 
-#define CFG_SYSCLK_HZ               (170000000UL)
+#define CFG_HXTAL_HZ                (32000000UL)
+#define CFG_SYSCLK_HZ               (112000000UL) /* HXTAL 32 MHz / 2 * 7 */
 #define CFG_PWM_HZ                  (20000UL)
 #define CFG_CTRL_HZ                 (4000UL)
 #define CFG_PWM_DT_S                (1.0f / (float)CFG_PWM_HZ)
 #define CFG_CTRL_DT_S               (1.0f / (float)CFG_CTRL_HZ)
 
 #define CFG_TIM1_ARR                ((uint32_t)((CFG_SYSCLK_HZ / (2UL * CFG_PWM_HZ)) - 1UL))
-#define CFG_TIM1_DEADTIME_DTG       (17U)   /* ~100 ns at 170 MHz, CKD=1 */
+#define CFG_TIM1_DEADTIME_DTG       (11U)   /* ~98 ns at 112 MHz, CKD=1 */
+#define CFG_CTRL_TIM_PSC            ((CFG_SYSCLK_HZ / (CFG_CTRL_HZ * 250UL)) - 1UL)
+#define CFG_CTRL_TIM_ARR            (249U)
 
 #define CFG_V_LIMIT                 (0.50f)    /* pu; also clamps cali Vd/Vq */
 #define CFG_V_SLEW_PU_S             (100.0f)   /* max |d(Vd,Vq)/dt|, pu/s */
@@ -75,7 +78,7 @@ extern "C" {
 #define CFG_KI_POS_MAX              (5.0f)
 #define CFG_KD_POS_MAX              (5.0f)
 
-#define CFG_CALI_LOCK_V             (0.05f)
+#define CFG_CALI_LOCK_V             (0.1f)
 #define CFG_CALI_LOCK_MS            (300U)
 #define CFG_CALI_ROTATE_ELEC_RAD_S  (3.141592653589793f) /* 0.5 elec rev/s */
 #define CFG_CALI_PP_ELEC_REVS       (4U)   /* per direction; both ways still 8 elec revs */
@@ -83,7 +86,7 @@ extern "C" {
 #define CFG_CALI_ROTATE_SAMPLE_MS   (10U)
 #define CFG_CALI_OFFSET_SKIP_MS     (250U)
 #define CFG_CALI_SETTLE_MS          (40U)
-#define CFG_CALI_MIN_MECH_DELTA     (0.05f)
+#define CFG_CALI_MIN_MECH_DELTA     (0.1f)
 #define CFG_CALI_PP_MIN             (2U)
 #define CFG_CALI_PP_MAX             (30U)
 #define CFG_CALI_PP_MAX_RESIDUAL    (0.40f)

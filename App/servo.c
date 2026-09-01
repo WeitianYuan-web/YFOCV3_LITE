@@ -5,7 +5,7 @@
 #include "foc_math.h"
 #include "foc_svpwm.h"
 #include "pwm.h"
-#include "stm32g4xx.h"
+#include "board.h"
 
 #include <math.h>
 

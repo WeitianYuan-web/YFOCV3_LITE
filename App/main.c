@@ -22,7 +22,7 @@ int main(void)
   Node_Init();
   Can_Init(Node_GetId());
 
-  Dbg_Printf("YFOCV3 LC-ESC voltage servo\r\n");
+  Dbg_Printf("YFOCV3 GD32F303 voltage servo\r\n");
   Pwm_StartTimer();
   Board_LedSet(1U);
   cali_ok = Cali_Start();

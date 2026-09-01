@@ -15,6 +15,7 @@ typedef struct
 
 void Can_Init(uint8_t node_id);
 void Can_ProcessRxIrq(void);
+void Can_OnBusOffIrq(void);
 void Can_Service(void);
 void Can_StopForFlash(void);
 void Can_Restart(void);

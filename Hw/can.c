@@ -6,6 +6,7 @@ static CanFrame_t s_rx[CFG_CAN_RX_SLOTS];
 static volatile uint8_t s_rx_head;
 static volatile uint8_t s_rx_tail;
 static volatile uint8_t s_bus_off_pending;
+static uint8_t s_node_id = 1U;
 
 static void Can_ConfigFilters(uint8_t id)
 {
@@ -16,70 +17,82 @@ static void Can_ConfigFilters(uint8_t id)
     CFG_CAN_POS_BASE,
     CFG_CAN_MGMT_BASE
   };
-  FDCAN_FilterTypeDef filter = {0};
+  can_filter_parameter_struct filter;
   uint32_t i;
 
-  filter.IdType = FDCAN_STANDARD_ID;
-  filter.FilterType = FDCAN_FILTER_MASK;
-  filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
-  filter.FilterID2 = 0x7FFU;
+  can_struct_para_init(CAN_FILTER_STRUCT, &filter);
+  filter.filter_mode = CAN_FILTERMODE_MASK;
+  filter.filter_bits = CAN_FILTERBITS_32BIT;
+  filter.filter_fifo_number = CAN_FIFO0;
+  filter.filter_enable = ENABLE;
+  filter.filter_list_low = 0U;
+  filter.filter_mask_low = 0x0006U;
+  filter.filter_mask_high = (uint16_t)(0x7FFU << 5);
 
   for (i = 0U; i < 5U; i++)
   {
-    filter.FilterIndex = i;
-    filter.FilterID1 = (uint32_t)bases[i] + (uint32_t)id;
-    if (HAL_FDCAN_ConfigFilter(&hfdcan1, &filter) != HAL_OK)
-    {
-      Error_Handler();
-    }
+    const uint16_t sid = (uint16_t)(bases[i] + (uint16_t)id);
+    filter.filter_number = (uint16_t)i;
+    filter.filter_list_high = (uint16_t)(sid << 5);
+    can_filter_init(&filter);
   }
+}
+
+static void Can_HwStart(uint8_t node_id)
+{
+  can_parameter_struct can_param;
+
+  s_node_id = ((node_id >= 1U) && (node_id <= 63U)) ? node_id : 1U;
+
+  can_deinit(CAN0);
+  can_struct_para_init(CAN_INIT_STRUCT, &can_param);
+  can_param.working_mode = CAN_NORMAL_MODE;
+  can_param.resync_jump_width = CAN_BT_SJW_1TQ;
+  can_param.time_segment_1 = CAN_BT_BS1_10TQ;
+  can_param.time_segment_2 = CAN_BT_BS2_3TQ;
+  can_param.time_triggered = DISABLE;
+  can_param.auto_bus_off_recovery = ENABLE;
+  can_param.auto_wake_up = DISABLE;
+  can_param.auto_retrans = ENABLE;
+  can_param.rec_fifo_overwrite = DISABLE;
+  can_param.trans_fifo_order = DISABLE;
+  /* APB1 = 56 MHz: 56 / (4 * (1+10+3)) = 1 Mbps */
+  can_param.prescaler = 4U;
+  if (SUCCESS != can_init(CAN0, &can_param))
+  {
+    Error_Handler();
+  }
+
+  Can_ConfigFilters(s_node_id);
+
+  can_interrupt_enable(CAN0, CAN_INT_RFNE0);
+  can_interrupt_enable(CAN0, CAN_INT_ERR);
+  can_interrupt_enable(CAN0, CAN_INT_BO);
+  nvic_irq_enable(USBD_LP_CAN0_RX0_IRQn, CFG_NVIC_CAN, 0U);
+  nvic_irq_enable(CAN0_EWMC_IRQn, CFG_NVIC_CAN, 0U);
 }
 
 void Can_Init(uint8_t node_id)
 {
-  uint8_t id = ((node_id >= 1U) && (node_id <= 63U)) ? node_id : 1U;
-
   s_rx_head = 0U;
   s_rx_tail = 0U;
   s_bus_off_pending = 0U;
-
-  Can_ConfigFilters(id);
-
-  (void)HAL_FDCAN_ConfigGlobalFilter(&hfdcan1,
-                                     FDCAN_REJECT,
-                                     FDCAN_REJECT,
-                                     FDCAN_FILTER_REMOTE,
-                                     FDCAN_FILTER_REMOTE);
-
-  if (HAL_FDCAN_Start(&hfdcan1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  HAL_NVIC_SetPriority(FDCAN1_IT0_IRQn, CFG_NVIC_CAN, 0U);
-  HAL_NVIC_EnableIRQ(FDCAN1_IT0_IRQn);
-
-  if (HAL_FDCAN_ActivateNotification(&hfdcan1,
-                                     (uint32_t)(FDCAN_IT_RX_FIFO0_NEW_MESSAGE | FDCAN_IT_BUS_OFF),
-                                     0U) != HAL_OK)
-  {
-    Error_Handler();
-  }
+  Can_HwStart(node_id);
 }
 
 void Can_ProcessRxIrq(void)
 {
-  FDCAN_RxHeaderTypeDef rx_header;
-  uint8_t rx_data[8];
+  can_receive_message_struct rx_msg;
 
-  while (HAL_FDCAN_GetRxMessage(&hfdcan1, FDCAN_RX_FIFO0, &rx_header, rx_data) == HAL_OK)
+  while (can_receive_message_length_get(CAN0, CAN_FIFO0) != 0U)
   {
     uint8_t next;
     uint8_t i;
 
-    if ((rx_header.IdType != FDCAN_STANDARD_ID) ||
-        (rx_header.DataLength != FDCAN_DLC_BYTES_8) ||
-        (rx_header.FDFormat != FDCAN_CLASSIC_CAN))
+    can_message_receive(CAN0, CAN_FIFO0, &rx_msg);
+    if ((rx_msg.rx_ff != CAN_FF_STANDARD) ||
+        (rx_msg.rx_ft != CAN_FT_DATA) ||
+        (rx_msg.rx_dlen != 8U))
     {
       continue;
     }
@@ -90,76 +103,56 @@ void Can_ProcessRxIrq(void)
       continue;
     }
 
-    s_rx[s_rx_head].id = rx_header.Identifier;
+    s_rx[s_rx_head].id = rx_msg.rx_sfid;
     for (i = 0U; i < 8U; i++)
     {
-      s_rx[s_rx_head].data[i] = rx_data[i];
+      s_rx[s_rx_head].data[i] = rx_msg.rx_data[i];
     }
     s_rx_head = next;
   }
 }
 
-void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
+void Can_OnBusOffIrq(void)
 {
-  (void)RxFifo0ITs;
-  if (hfdcan->Instance == FDCAN1)
+  if (SET == can_interrupt_flag_get(CAN0, CAN_INT_FLAG_BOERR))
   {
-    Can_ProcessRxIrq();
-  }
-}
-
-void HAL_FDCAN_ErrorStatusCallback(FDCAN_HandleTypeDef *hfdcan, uint32_t ErrorStatusITs)
-{
-  if ((hfdcan == &hfdcan1) && ((ErrorStatusITs & FDCAN_IT_BUS_OFF) != 0U))
-  {
+    can_interrupt_flag_clear(CAN0, CAN_INT_FLAG_BOERR);
     s_bus_off_pending = 1U;
+  }
+  if (SET == can_interrupt_flag_get(CAN0, CAN_INT_FLAG_ERRIF))
+  {
+    can_interrupt_flag_clear(CAN0, CAN_INT_FLAG_ERRIF);
   }
 }
 
 void Can_StopForFlash(void)
 {
-  NVIC_DisableIRQ(FDCAN1_IT0_IRQn);
-  if (hfdcan1.State == HAL_FDCAN_STATE_BUSY)
-  {
-    (void)HAL_FDCAN_Stop(&hfdcan1);
-  }
-  SET_BIT(hfdcan1.Instance->CCCR, FDCAN_CCCR_INIT);
-  hfdcan1.State = HAL_FDCAN_STATE_READY;
-  hfdcan1.ErrorCode = HAL_FDCAN_ERROR_NONE;
+  nvic_irq_disable(USBD_LP_CAN0_RX0_IRQn);
+  nvic_irq_disable(CAN0_EWMC_IRQn);
+  can_interrupt_disable(CAN0, CAN_INT_RFNE0);
+  can_interrupt_disable(CAN0, CAN_INT_ERR);
+  can_interrupt_disable(CAN0, CAN_INT_BO);
+  (void)can_working_mode_set(CAN0, CAN_MODE_INITIALIZE);
 }
 
 void Can_Restart(void)
 {
-  FDCAN_RxHeaderTypeDef rx_header;
-  uint8_t rx_data[8];
+  can_receive_message_struct rx_msg;
 
   s_rx_head = 0U;
   s_rx_tail = 0U;
   s_bus_off_pending = 0U;
-  hfdcan1.ErrorCode = HAL_FDCAN_ERROR_NONE;
-  SET_BIT(hfdcan1.Instance->CCCR, FDCAN_CCCR_INIT);
-  hfdcan1.State = HAL_FDCAN_STATE_READY;
 
-  if (HAL_FDCAN_Start(&hfdcan1) != HAL_OK)
+  Can_HwStart(s_node_id);
+  while (can_receive_message_length_get(CAN0, CAN_FIFO0) != 0U)
   {
-    return;
+    can_message_receive(CAN0, CAN_FIFO0, &rx_msg);
   }
-
-  while (HAL_FDCAN_GetRxMessage(&hfdcan1, FDCAN_RX_FIFO0, &rx_header, rx_data) == HAL_OK)
-  {
-  }
-
-  HAL_NVIC_SetPriority(FDCAN1_IT0_IRQn, CFG_NVIC_CAN, 0U);
-  HAL_NVIC_EnableIRQ(FDCAN1_IT0_IRQn);
-  (void)HAL_FDCAN_ActivateNotification(
-      &hfdcan1,
-      (uint32_t)(FDCAN_IT_RX_FIFO0_NEW_MESSAGE | FDCAN_IT_BUS_OFF),
-      0U);
 }
 
 void Can_Service(void)
 {
-  if ((s_bus_off_pending == 0U) && ((hfdcan1.Instance->PSR & FDCAN_PSR_BO) == 0U))
+  if ((s_bus_off_pending == 0U) && (RESET == can_flag_get(CAN0, CAN_FLAG_BOERR)))
   {
     return;
   }
@@ -194,21 +187,20 @@ uint8_t Can_PopRx(CanFrame_t *frame)
 
 uint8_t Can_Send(uint32_t id, const uint8_t data[8])
 {
-  FDCAN_TxHeaderTypeDef tx_header;
+  can_transmit_message_struct tx_msg;
+  uint8_t mailbox;
+  uint8_t i;
 
-  tx_header.Identifier = id;
-  tx_header.IdType = FDCAN_STANDARD_ID;
-  tx_header.TxFrameType = FDCAN_DATA_FRAME;
-  tx_header.DataLength = FDCAN_DLC_BYTES_8;
-  tx_header.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
-  tx_header.BitRateSwitch = FDCAN_BRS_OFF;
-  tx_header.FDFormat = FDCAN_CLASSIC_CAN;
-  tx_header.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
-  tx_header.MessageMarker = 0U;
-
-  if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx_header, (uint8_t *)data) != HAL_OK)
+  tx_msg.tx_sfid = id;
+  tx_msg.tx_efid = 0U;
+  tx_msg.tx_ff = CAN_FF_STANDARD;
+  tx_msg.tx_ft = CAN_FT_DATA;
+  tx_msg.tx_dlen = 8U;
+  for (i = 0U; i < 8U; i++)
   {
-    return 0U;
+    tx_msg.tx_data[i] = data[i];
   }
-  return 1U;
+
+  mailbox = can_message_transmit(CAN0, &tx_msg);
+  return (mailbox != CAN_NOMAILBOX) ? 1U : 0U;
 }

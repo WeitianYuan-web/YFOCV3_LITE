@@ -1,6 +1,6 @@
-# YFOCV3 最小电压伺服（LC-ESC）
+# YFOCV3 最小电压伺服（GD32F303）
 
-面向 **LC-ESC / STM32G431CBT6 + FD6288 + MT6701** 的最小电压模式伺服固件。上电校准或加载参数后直接进入运控，用 CAN 收 Motor Protocol V1.0 运控帧。
+面向 **GD32F303CCT6 + FD6288 + MT6701** 的最小电压模式伺服固件。引脚与 LC-ESC / F303 参考板（`F303__C`）一致。上电校准或加载参数后直接进入运控，用 CAN 收 Motor Protocol V1.0 运控帧。
 
 ## 构建
 
@@ -37,7 +37,7 @@ cmake --build --preset lc-voltage
 
 ### 烧录（OpenOCD）
 
-探针为 **CMSIS-DAP + SWD**（与 YFOCV3_ST 相同：`adapter driver cmsis-dap`）。先整片擦除再写入。
+探针为 **CMSIS-DAP + SWD**。默认用 GD32EB 自带的 OpenOCD（带 `gd32f30x` 烧录驱动）。不要用发行版 OpenOCD 的 `stm32f1x mass_erase`：它会把本芯片误判成 512 KB，整片擦除超时。
 
 ```powershell
 .\scripts\flash.ps1
@@ -45,32 +45,33 @@ cmake --build --preset lc-voltage
 .\scripts\flash.ps1 -Preset lc-voltage-debug
 ```
 
-OpenOCD 默认 `D:\OpenOCD-20240916-0.12.0`。换路径时传 `-OpenOcdExe` / `-OpenOcdScripts`。
+换 OpenOCD 时传 `-OpenOcdExe` / `-OpenOcdScripts`。必须是带 `gd32f30x` flash 驱动的版本（GD32EB：`plugins/com.gd.tools.openocd_*/Tools/OpenOCD`）。
 
 ```bash
-openocd -s /path/to/openocd/scripts -f scripts/openocd-stm32g431.cfg \
-  -c "init" -c "reset halt" -c "stm32l4x mass_erase 0" \
-  -c "program build/lc-voltage/YFOCV3.elf verify" -c "reset run" -c "shutdown"
+openocd -s /path/to/gd32-openocd/scripts -f scripts/openocd-gd32f303.cfg \
+  -c "program build/lc-voltage/YFOCV3.elf verify reset exit"
 ```
 
 ## 硬件
 
+MCU：**GD32F303CCT6**（Cortex-M4F，256 KB Flash / 48 KB SRAM）。网表与 `F303__C` 相同。
+
 | 功能 | 引脚 |
 |------|------|
-| TIM1 PWM 高侧 | PA8 / PA9 / PA10 |
-| TIM1 PWM 低侧 | PB13 / PB14 / PB15 |
-| SPI1 编码器 | PA5/6/7，CS=PA4（`CFG_ENCODER_TYPE`：MT6701 SSI 或 KTH7812 SPI Mode3） |
-| 母线电压 | PB0 / ADC1_IN15，`Vbus = Vadc × 31.3` |
-| FDCAN1 | PA11 / PA12，Classic 1 Mbps |
+| TIMER0 PWM 高侧 | PA8 / PA9 / PA10 |
+| TIMER0 PWM 低侧 | PB13 / PB14 / PB15 |
+| SPI0 编码器 | PA5/6/7，CS=PA4（`CFG_ENCODER_TYPE`：MT6701 SSI 或 KTH7812 SPI Mode3） |
+| 母线电压 | PB0 / ADC0_IN8，`Vbus = Vadc × 31.3` |
+| CAN0 | PB8 RX / PB9 TX（`GPIO_CAN_PARTIAL_REMAP`；默认 PA11/PA12 与 USB 复用），Classic 1 Mbps（bxCAN，非 FDCAN） |
 | LED | PC13，高电平亮；正常运行按 ID 闪（十位长闪 + 个位短闪） |
 | 按键 | PB3 上拉，按下接地。长按 2 s 改 ID，短按 +1，再长按保存并复位 |
-| 时钟 | HSE 32 MHz → 170 MHz |
+| 时钟 | HXTAL 32 MHz → 112 MHz（`(32 MHz / 2) * 7`） |
 
-PWM 20 kHz 中心对齐；TIM6 4 kHz 运控。母线电压走 ADC1 规则组（软件触发，约 5 ms）；注入组空着，留给以后的 20 kHz 电流，运行中不换通道、不停 ADC。当前无电流采样。
+PWM 20 kHz 中心对齐；TIMER5 4 kHz 运控。母线电压走 ADC0 规则组（软件触发，约 5 ms）；注入组空着，留给以后的 20 kHz 电流，运行中不换通道、不停 ADC。当前无电流采样。
 
 ## 上电校准
 
-首次成功校准后写入 Flash 最后一页（`0x0801F800`，2 KB）。之后上电若记录有效（magic / CRC / 极对数范围合法）则直接加载，电机不再转一圈。
+首次成功校准后写入 Flash 最后一页（`0x0803F800`，2 KB）。之后上电若记录有效（magic / CRC / 极对数范围合法）则直接加载，电机不再转一圈。
 
 `flash.ps1` 整片擦除会清掉校准，烧录后第一次上电仍会走完整校准。运行中可用 CAN `START_ENCODER_CALIBRATION` 重校准并覆盖 Flash。
 
@@ -194,7 +195,7 @@ macOS / slcan：`--interface slcan --channel /dev/cu.usbserial` 或 Windows `COM
 
 ## 调试
 
-SEGGER RTT（SWD）。LC-ESC 的 PB3 是按键（改 CAN ID），不要用 SWO。主循环约 200 ms 打印一次 `p/v/t/kp/kd`（整数毫弧度等）。
+SEGGER RTT（SWD）。PB3 是按键（改 CAN ID），不要用 SWO。主循环约 200 ms 打印一次 `p/v/t/kp/kd`（整数毫弧度等）。
 
 ## 注意
 

@@ -10,7 +10,7 @@
 #include "foc_math.h"
 #include "pwm.h"
 #include "servo.h"
-#include "stm32g4xx_hal.h"
+#include "board.h"
 
 #include <math.h>
 

@@ -1,13 +1,24 @@
 #include "encoder.h"
-#include "board.h"
-#include "stm32g4xx.h"
+#include "gd32f30x.h"
 
+#define ENCODER_SPI           SPI0
+#define ENCODER_CS_PIN        GPIO_PIN_4
 #define ENCODER_SPI_FAST_GUARD  (4000U)
 #if (CFG_ENCODER_TYPE == CFG_ENCODER_KTH7812)
 #define ENCODER_CS_SETUP_NOPS   (16U)
 #else
 #define ENCODER_CS_SETUP_NOPS   (12U)
 #endif
+
+static void Encoder_CsHigh(void)
+{
+  GPIO_BOP(GPIOA) = ENCODER_CS_PIN;
+}
+
+static void Encoder_CsLow(void)
+{
+  GPIO_BC(GPIOA) = ENCODER_CS_PIN;
+}
 
 #if (CFG_ENCODER_TYPE == CFG_ENCODER_MT6701)
 static uint8_t Mt6701_CalcCrc6(uint32_t data18)
@@ -66,28 +77,31 @@ static uint16_t Mt6701_Parse(const uint8_t raw[3], uint8_t *status_out, uint8_t 
 
 static void Encoder_FlushRx8(void)
 {
-  SPI_TypeDef *spi = SPI1;
-  volatile uint8_t *spi_dr8 = (volatile uint8_t *)&spi->DR;
+  volatile uint8_t *spi_dr8 = (volatile uint8_t *)(uint32_t)(ENCODER_SPI + 0x0CU);
   uint32_t guard = 16U;
 
-  while (((spi->SR & SPI_SR_RXNE) != 0U) && (--guard != 0U))
+  while ((0U != (SPI_STAT(ENCODER_SPI) & SPI_STAT_RBNE)) && (--guard != 0U))
   {
     (void)*spi_dr8;
+  }
+  if (0U != (SPI_STAT(ENCODER_SPI) & SPI_STAT_RXORERR))
+  {
+    (void)*spi_dr8;
+    (void)SPI_STAT(ENCODER_SPI);
   }
 }
 
 static uint8_t Encoder_PumpBytes8(uint8_t *rx, uint16_t length)
 {
-  SPI_TypeDef *spi = SPI1;
-  volatile uint8_t *spi_dr8 = (volatile uint8_t *)&spi->DR;
+  volatile uint8_t *spi_dr8 = (volatile uint8_t *)(uint32_t)(ENCODER_SPI + 0x0CU);
   uint16_t tx_index = 0U;
   uint16_t rx_index = 0U;
   uint32_t guard = ENCODER_SPI_FAST_GUARD;
 
-  spi->CR1 |= SPI_CR1_SPE;
+  SPI_CTL0(ENCODER_SPI) |= SPI_CTL0_SPIEN;
   Encoder_FlushRx8();
 
-  while ((tx_index < length) && ((spi->SR & SPI_SR_TXE) != 0U))
+  while ((tx_index < length) && (0U != (SPI_STAT(ENCODER_SPI) & SPI_STAT_TBE)))
   {
     *spi_dr8 = 0U;
     tx_index++;
@@ -95,13 +109,13 @@ static uint8_t Encoder_PumpBytes8(uint8_t *rx, uint16_t length)
 
   while (rx_index < length)
   {
-    if ((tx_index < length) && ((spi->SR & SPI_SR_TXE) != 0U))
+    if ((tx_index < length) && (0U != (SPI_STAT(ENCODER_SPI) & SPI_STAT_TBE)))
     {
       *spi_dr8 = 0U;
       tx_index++;
     }
 
-    if ((spi->SR & SPI_SR_RXNE) != 0U)
+    if (0U != (SPI_STAT(ENCODER_SPI) & SPI_STAT_RBNE))
     {
       rx[rx_index] = *spi_dr8;
       rx_index++;
@@ -120,13 +134,12 @@ static uint8_t Encoder_PumpBytes8(uint8_t *rx, uint16_t length)
 #if (CFG_ENCODER_TYPE == CFG_ENCODER_KTH7812)
 static uint8_t Encoder_PumpWord16(uint16_t *rx)
 {
-  SPI_TypeDef *spi = SPI1;
-  volatile uint16_t *spi_dr16 = (volatile uint16_t *)&spi->DR;
+  volatile uint16_t *spi_dr16 = (volatile uint16_t *)(uint32_t)(ENCODER_SPI + 0x0CU);
   uint32_t guard = ENCODER_SPI_FAST_GUARD;
 
-  spi->CR1 |= SPI_CR1_SPE;
+  SPI_CTL0(ENCODER_SPI) |= SPI_CTL0_SPIEN;
 
-  while (((spi->SR & SPI_SR_TXE) == 0U) && (--guard != 0U))
+  while ((0U == (SPI_STAT(ENCODER_SPI) & SPI_STAT_TBE)) && (--guard != 0U))
   {
   }
   if (guard == 0U)
@@ -136,7 +149,7 @@ static uint8_t Encoder_PumpWord16(uint16_t *rx)
   *spi_dr16 = 0U;
 
   guard = ENCODER_SPI_FAST_GUARD;
-  while (((spi->SR & SPI_SR_RXNE) == 0U) && (--guard != 0U))
+  while ((0U == (SPI_STAT(ENCODER_SPI) & SPI_STAT_RBNE)) && (--guard != 0U))
   {
   }
   if (guard == 0U)
@@ -146,7 +159,7 @@ static uint8_t Encoder_PumpWord16(uint16_t *rx)
   *rx = *spi_dr16;
 
   guard = ENCODER_SPI_FAST_GUARD;
-  while (((spi->SR & SPI_SR_BSY) != 0U) && (--guard != 0U))
+  while ((0U != (SPI_STAT(ENCODER_SPI) & SPI_STAT_TRANS)) && (--guard != 0U))
   {
   }
   return (guard != 0U) ? 1U : 0U;
@@ -164,15 +177,15 @@ static void Encoder_CsSetupDelay(void)
 
 void Encoder_Init(void)
 {
-  GPIOA->BSRR = GPIO_PIN_4;
-  SPI1->CR1 |= SPI_CR1_SPE;
+  Encoder_CsHigh();
+  SPI_CTL0(ENCODER_SPI) |= SPI_CTL0_SPIEN;
 #if (CFG_ENCODER_TYPE == CFG_ENCODER_KTH7812)
   {
     uint16_t dummy = 0U;
-    GPIOA->BSRR = (uint32_t)GPIO_PIN_4 << 16U;
+    Encoder_CsLow();
     Encoder_CsSetupDelay();
     (void)Encoder_PumpWord16(&dummy);
-    GPIOA->BSRR = GPIO_PIN_4;
+    Encoder_CsHigh();
   }
 #endif
 }
@@ -192,27 +205,26 @@ uint8_t Encoder_ReadFrame(uint16_t *raw_out, uint8_t *status_out)
   primask = __get_PRIMASK();
   __disable_irq();
 
-  /* Same as YFOCV3_ST: two CS frames of 0x0000, angle is in the second. */
   for (attempt = 0U; attempt < 2U; attempt++)
   {
-    GPIOA->BSRR = (uint32_t)GPIO_PIN_4 << 16U;
+    Encoder_CsLow();
     Encoder_CsSetupDelay();
     if (Encoder_PumpWord16(&rx) == 0U)
     {
-      GPIOA->BSRR = GPIO_PIN_4;
+      Encoder_CsHigh();
       continue;
     }
-    GPIOA->BSRR = GPIO_PIN_4;
+    Encoder_CsHigh();
     Encoder_CsSetupDelay();
 
-    GPIOA->BSRR = (uint32_t)GPIO_PIN_4 << 16U;
+    Encoder_CsLow();
     Encoder_CsSetupDelay();
     if (Encoder_PumpWord16(&rx) == 0U)
     {
-      GPIOA->BSRR = GPIO_PIN_4;
+      Encoder_CsHigh();
       continue;
     }
-    GPIOA->BSRR = GPIO_PIN_4;
+    Encoder_CsHigh();
 
     *raw_out = rx;
     if (status_out != 0)
@@ -246,14 +258,14 @@ uint8_t Encoder_ReadFrame(uint16_t *raw_out, uint8_t *status_out)
 
   for (attempt = 0U; attempt < 2U; attempt++)
   {
-    GPIOA->BSRR = (uint32_t)GPIO_PIN_4 << 16U;
+    Encoder_CsLow();
     Encoder_CsSetupDelay();
     if (Encoder_PumpBytes8(rx, 3U) == 0U)
     {
-      GPIOA->BSRR = GPIO_PIN_4;
+      Encoder_CsHigh();
       continue;
     }
-    GPIOA->BSRR = GPIO_PIN_4;
+    Encoder_CsHigh();
 
     angle = Mt6701_Parse(rx, &status, &crc_ok);
     if ((angle != ENCODER_READ_INVALID) && (crc_ok != 0U))
@@ -283,24 +295,24 @@ uint8_t Encoder_ReadRawFast(uint16_t *raw_out)
     return 0U;
   }
 
-  GPIOA->BSRR = (uint32_t)GPIO_PIN_4 << 16U;
+  Encoder_CsLow();
   Encoder_CsSetupDelay();
   if (Encoder_PumpWord16(&rx) == 0U)
   {
-    GPIOA->BSRR = GPIO_PIN_4;
+    Encoder_CsHigh();
     return 0U;
   }
-  GPIOA->BSRR = GPIO_PIN_4;
+  Encoder_CsHigh();
   Encoder_CsSetupDelay();
 
-  GPIOA->BSRR = (uint32_t)GPIO_PIN_4 << 16U;
+  Encoder_CsLow();
   Encoder_CsSetupDelay();
   if (Encoder_PumpWord16(&rx) == 0U)
   {
-    GPIOA->BSRR = GPIO_PIN_4;
+    Encoder_CsHigh();
     return 0U;
   }
-  GPIOA->BSRR = GPIO_PIN_4;
+  Encoder_CsHigh();
   *raw_out = rx;
   return 1U;
 }
@@ -315,14 +327,14 @@ uint8_t Encoder_ReadRawFast(uint16_t *raw_out)
     return 0U;
   }
 
-  GPIOA->BSRR = (uint32_t)GPIO_PIN_4 << 16U;
+  Encoder_CsLow();
   Encoder_CsSetupDelay();
   if (Encoder_PumpBytes8(rx, 3U) == 0U)
   {
-    GPIOA->BSRR = GPIO_PIN_4;
+    Encoder_CsHigh();
     return 0U;
   }
-  GPIOA->BSRR = GPIO_PIN_4;
+  Encoder_CsHigh();
 
   frame24 = ((uint32_t)rx[0] << 16U) | ((uint32_t)rx[1] << 8U) | (uint32_t)rx[2];
   if (frame24 == 0U)
